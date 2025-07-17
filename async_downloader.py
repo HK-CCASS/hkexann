@@ -169,109 +169,20 @@ class AsyncHKEXDownloader(HKEXDownloader):
                 # 返回状态码和内容
                 return response.status, await response.read()
     
-    async def async_get_stockid(self, stockcode: str) -> str:
-        """异步获取股票ID"""
-        await self._ensure_session()
-        
-        url = f'https://www1.hkexnews.hk/search/prefix.do?&callback=callback&lang=ZH&type=A&name={stockcode}&market=SEHK&_=1653821865437'
-        
-        try:
-            status, content = await self._fetch_with_retry(url)
-            
-            # 处理 JSONP 响应
-            text = content.decode('utf-8')
-            data = text[9:-4]
-            data_json = json.loads(data)
-            
-            if 'stockInfo' not in data_json or not data_json['stockInfo']:
-                raise ValueError(f"未找到股票代码 {stockcode} 对应的信息")
-            
-            stockid = data_json["stockInfo"][0]['stockId']
-            self.logger.info(f"股票代码 {stockcode} 对应的 StockID: {stockid}")
-            return stockid
-            
-        except Exception as e:
-            self.logger.error(f"获取股票 {stockcode} 信息失败: {str(e)}")
-            raise
+    def async_get_stockid(self, stockcode: str) -> str:
+        """获取股票ID（同步调用父类方法）"""
+        self.logger.info(f"[同步] 获取股票代码 {stockcode} 的 StockID")
+        return super().get_stockid(stockcode)
     
-    async def async_get_announcement_list(self, stockcode: str, start_date: datetime, 
+    def async_get_announcement_list(self, stockcode: str, start_date: datetime, 
                                         end_date: datetime, keywords: List[str] = None) -> List[Dict]:
-        """异步获取公告列表"""
-        await self._ensure_session()
-        
-        try:
-            # 获取 stockId
-            stockid = await self.async_get_stockid(stockcode)
-            
-            # 处理关键字
-            search_keyword = keywords[-1] if keywords else ""
-            
-            # 准备日期格式
-            start_date_str = start_date.strftime("%Y%m%d")
-            end_date_str = end_date.strftime("%Y%m%d")
-            
-            # 获取语言和最大结果数设置
-            language = self.config.get('settings', 'language', 'zh')
-            max_results = self.config.get('settings', 'max_results', 500)
-            
-            # 构建完整URL
-            url = f'https://www1.hkexnews.hk/search/titleSearchServlet.do?sortDir=0&sortByOptions=DateTime&category=0&market=SEHK&stockId={stockid}&documentType=-1&fromDate={start_date_str}&toDate={end_date_str}&title={search_keyword}&searchType=0&t1code=-2&t2Gcode=-2&t2code=-2&rowRange={max_results}&lang={language}'
-            
-            headers = {
-                "sec-ch-ua-platform": "\"Windows\"",
-                "x-requested-with": "XMLHttpRequest",
-                "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                "accept": "text/html, */*; q=0.01",
-                "referer": "https://www1.hkexnews.hk/search/titlesearch.xhtml?lang=zh"
-            }
-            
-            status, content = await self._fetch_with_retry(url, headers=headers)
-            
-            # 处理响应数据
-            text = content.decode('utf-8')
-            # 清理响应文本
-            text = text.replace('"[{', '[{').replace('}]"', '}]').replace('\\', "").replace('u2013', "-").replace('u0026', "-")
-            data_json = json.loads(text)
-            
-            if not data_json or 'result' not in data_json or not data_json['result']:
-                self.logger.warning(f"股票 {stockcode} 未找到符合条件的公告")
-                return []
-            
-            announcements = []
-            for item in data_json['result']:
-                try:
-                    # 获取标题
-                    title = item['TITLE'].replace('/', "-")
-                    
-                    # 获取 PDF 链接
-                    pdflink = item['FILE_LINK']
-                    pdf_link = "https://www1.hkexnews.hk" + pdflink
-                    
-                    # 处理日期
-                    anndate = item['DATE_TIME']
-                    anndate = anndate[:10].replace('/', "-")
-                    date_object = datetime.strptime(anndate, "%d-%m-%Y")
-                    formatted_date = date_object.strftime("%Y-%m-%d")
-                    
-                    announcements.append({
-                        'date': formatted_date,
-                        'title': title,
-                        'link': pdf_link
-                    })
-                    
-                except Exception as e:
-                    self.logger.warning(f"处理公告项目时发生错误: {str(e)}")
-                    continue
-            
-            self.logger.info(f"股票 {stockcode} 找到 {len(announcements)} 个符合条件的公告")
-            return announcements
-            
-        except Exception as e:
-            self.logger.error(f"获取股票 {stockcode} 公告列表时发生错误: {str(e)}")
-            raise
+        """获取公告列表（同步调用父类方法）"""
+        self.logger.info(f"[同步] 获取股票 {stockcode} 的公告列表")
+        return super().get_announcement_list(stockcode, start_date, end_date, keywords)
     
     async def async_download_file(self, url: str, filepath: str) -> bool:
         """异步下载文件"""
+        self.logger.debug(f"[异步] 开始下载文件: {os.path.basename(filepath)}")
         await self._ensure_session()
         
         try:
@@ -301,10 +212,10 @@ class AsyncHKEXDownloader(HKEXDownloader):
         end_date = self.config.parse_date(task.get('end_date', 'today'))
         keywords = task.get('keywords', [])
         
-        self.logger.info(f"开始异步下载股票 {stockcode} 的公告")
+        self.logger.info(f"开始混合模式下载股票 {stockcode} 的公告（获取列表: 同步，文件下载: 异步）")
         
         # 获取公告列表
-        announcements = await self.async_get_announcement_list(stockcode, start_date, end_date, keywords)
+        announcements = self.async_get_announcement_list(stockcode, start_date, end_date, keywords)
         
         if not announcements:
             return "", 0
@@ -370,7 +281,7 @@ class AsyncHKEXDownloader(HKEXDownloader):
         if not stock_codes:
             raise ValueError("股票代码列表为空")
         
-        self.logger.info(f"开始异步批量下载 {len(stock_codes)} 只股票的公告")
+        self.logger.info(f"开始混合模式批量下载 {len(stock_codes)} 只股票的公告（获取列表: 同步，文件下载: 异步）")
         
         total_downloaded = 0
         base_save_path = self.config.get('settings', 'save_path')
@@ -413,7 +324,7 @@ class AsyncHKEXDownloader(HKEXDownloader):
         pbar.close()
         
         # 输出统计信息
-        self.logger.info(f"异步批量下载完成！")
+        self.logger.info(f"混合模式批量下载完成！")
         self.logger.info(f"  总股票数: {len(stock_codes)}")
         self.logger.info(f"  成功: {self.stats['success']}")
         self.logger.info(f"  失败: {self.stats['failed']}")

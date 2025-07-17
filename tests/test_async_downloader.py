@@ -131,7 +131,7 @@ class TestAsyncHKEXDownloader:
             mock_response.read.return_value = b'callback({"stockInfo":[{"stockId":"12345"}]})'
             
             with patch.object(downloader._session, 'get', return_value=mock_response):
-                stock_id = await downloader.async_get_stockid('00700')
+                stock_id = downloader.async_get_stockid('00700')
                 assert stock_id == '12345'
     
     @pytest.mark.asyncio
@@ -150,7 +150,7 @@ class TestAsyncHKEXDownloader:
                 }]}'''
                 
                 with patch.object(downloader._session, 'get', return_value=mock_response):
-                    announcements = await downloader.async_get_announcement_list(
+                    announcements = downloader.async_get_announcement_list(
                         '00700',
                         datetime(2025, 1, 1),
                         datetime(2025, 7, 31)
