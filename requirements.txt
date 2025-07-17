@@ -1,0 +1,14 @@
+# HKEX 公告下载器依赖包
+
+# 核心依赖
+requests>=2.25.1          # HTTP请求库
+PyYAML>=5.4.1            # YAML配置文件解析
+beautifulsoup4>=4.9.3    # HTML解析
+pymysql>=1.0.2           # MySQL数据库连接
+
+# 可选依赖
+opencc-python-reimplemented>=1.1.6  # 繁简体转换 (可选)
+
+# 开发依赖 (可选)
+pytest>=6.2.4           # 单元测试
+pytest-cov>=2.12.1      # 测试覆盖率
