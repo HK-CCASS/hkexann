@@ -1266,6 +1266,8 @@ class HKEXDownloaderCLI:
         parser.add_argument('--list-tasks', action='store_true', help='列出配置文件中的所有任务')
 
         parser.add_argument('--run-task', help='运行指定名称的任务')
+        
+        parser.add_argument('--async', dest='use_async', action='store_true', help='使用异步模式下载（大幅提升速度）')
 
         parser.add_argument('-v', '--verbose', action='store_true', help='启用详细输出')
 
@@ -1343,19 +1345,37 @@ class HKEXDownloaderCLI:
         if args.save_path:
             config_manager.config['settings']['save_path'] = args.save_path
 
-        downloader = HKEXDownloader(config_manager)
+        # 检查是否使用异步模式
+        import os
+        force_async = os.environ.get('HKEX_FORCE_ASYNC', '').lower() in ('true', '1', 'yes', 'on')
+        if args.use_async or force_async:
+            print("🚀 使用异步模式下载...")
+            try:
+                from async_downloader import run_async_download
+                save_path, count = run_async_download(config_manager, task)
+                if count > 0:
+                    print(f"\n✓ 异步下载完成！成功下载 {count} 个文件到 {save_path}")
+                else:
+                    print("\n⚠ 未找到符合条件的公告")
+            except ImportError:
+                print("❌ 异步模式需要安装额外依赖：pip install aiohttp aiofiles tenacity tqdm")
+                sys.exit(1)
+            except Exception as e:
+                print(f"\n✗ 异步下载失败: {e}")
+                sys.exit(1)
+        else:
+            downloader = HKEXDownloader(config_manager)
+            try:
+                save_path, count = downloader.download_announcements(task)
+                if count > 0:
+                    print(f"\n✓ 下载完成！成功下载 {count} 个文件到 {save_path}")
+                else:
+                    print("\n⚠ 未找到符合条件的公告")
+            except Exception as e:
+                print(f"\n✗ 下载失败: {e}")
+                sys.exit(1)
 
-        try:
-            save_path, count = downloader.download_announcements(task)
-            if count > 0:
-                print(f"\n✓ 下载完成！成功下载 {count} 个文件到 {save_path}")
-            else:
-                print("\n⚠ 未找到符合条件的公告")
-        except Exception as e:
-            print(f"\n✗ 下载失败: {e}")
-            sys.exit(1)
-
-    def run_config_tasks(self, config_manager: ConfigManager):
+    def run_config_tasks(self, config_manager: ConfigManager, use_async: bool = False):
         """运行配置文件中的任务"""
         tasks = config_manager.get('download_tasks') or []
         enabled_tasks = [t for t in tasks if isinstance(t, dict) and t.get('enabled', True)]
@@ -1364,29 +1384,51 @@ class HKEXDownloaderCLI:
             print("配置文件中没有启用的任务")
             return
 
-        downloader = HKEXDownloader(config_manager)
         total_downloaded = 0
-
         print(f"开始执行 {len(enabled_tasks)} 个启用的任务:\n")
 
-        for i, task in enumerate(enabled_tasks, 1):
-            print(f"[{i}/{len(enabled_tasks)}] 执行任务: {task.get('name', '未命名任务')}")
-
+        # 检查是否使用异步模式（仅命令行参数或环境变量）
+        import os
+        force_async = os.environ.get('HKEX_FORCE_ASYNC', '').lower() in ('true', '1', 'yes', 'on')
+        
+        if use_async or force_async:
+            print("🚀 使用异步模式执行任务...")
             try:
-                save_path, count = downloader.download_announcements(task)
-                total_downloaded += count
-                if count > 0:
-                    print(f"✓ 任务完成！下载 {count} 个文件到 {save_path}\n")
-                else:
-                    print("⚠ 未找到符合条件的公告\n")
-
-            except Exception as e:
-                print(f"✗ 任务失败: {e}\n")
-                continue
+                from async_downloader import run_async_download
+                for i, task in enumerate(enabled_tasks, 1):
+                    print(f"[{i}/{len(enabled_tasks)}] 执行任务: {task.get('name', '未命名任务')}")
+                    try:
+                        save_path, count = run_async_download(config_manager, task)
+                        total_downloaded += count
+                        if count > 0:
+                            print(f"✓ 任务完成！下载 {count} 个文件到 {save_path}\n")
+                        else:
+                            print("⚠ 未找到符合条件的公告\n")
+                    except Exception as e:
+                        print(f"✗ 任务失败: {e}\n")
+                        continue
+            except ImportError:
+                print("❌ 异步模式需要安装额外依赖，回退到同步模式...")
+                use_async = force_async = False
+        
+        if not (use_async or force_async):
+            downloader = HKEXDownloader(config_manager)
+            for i, task in enumerate(enabled_tasks, 1):
+                print(f"[{i}/{len(enabled_tasks)}] 执行任务: {task.get('name', '未命名任务')}")
+                try:
+                    save_path, count = downloader.download_announcements(task)
+                    total_downloaded += count
+                    if count > 0:
+                        print(f"✓ 任务完成！下载 {count} 个文件到 {save_path}\n")
+                    else:
+                        print("⚠ 未找到符合条件的公告\n")
+                except Exception as e:
+                    print(f"✗ 任务失败: {e}\n")
+                    continue
 
         print(f"所有任务执行完成！总共下载 {total_downloaded} 个文件")
 
-    def run_named_task(self, task_name: str, config_manager: ConfigManager):
+    def run_named_task(self, task_name: str, config_manager: ConfigManager, use_async: bool = False):
         """运行指定名称的任务"""
         tasks = config_manager.get('download_tasks') or []
         target_task = None
@@ -1404,18 +1446,37 @@ class HKEXDownloaderCLI:
             print(f"任务 '{task_name}' 已禁用")
             sys.exit(1)
 
-        downloader = HKEXDownloader(config_manager)
-
-        try:
-            print(f"执行任务: {task_name}")
-            save_path, count = downloader.download_announcements(target_task)
-            if count > 0:
-                print(f"\n✓ 任务完成！成功下载 {count} 个文件到 {save_path}")
-            else:
-                print("\n⚠ 未找到符合条件的公告")
-        except Exception as e:
-            print(f"\n✗ 任务失败: {e}")
-            sys.exit(1)
+        # 检查是否启用异步
+        import os
+        force_async = os.environ.get('HKEX_FORCE_ASYNC', '').lower() in ('true', '1', 'yes', 'on')
+        if use_async or force_async:
+            try:
+                from async_downloader import run_async_download
+                print(f"🚀 使用异步模式执行任务: {task_name}")
+                save_path, count = run_async_download(config_manager, target_task)
+                if count > 0:
+                    print(f"\n✓ 任务完成！成功下载 {count} 个文件到 {save_path}")
+                else:
+                    print("\n⚠ 未找到符合条件的公告")
+            except ImportError:
+                print("❌ 异步模式需要安装额外依赖，回退到同步模式...")
+                use_async = force_async = False
+            except Exception as e:
+                print(f"\n✗ 任务失败: {e}")
+                sys.exit(1)
+        
+        if not (use_async or force_async):
+            downloader = HKEXDownloader(config_manager)
+            try:
+                print(f"执行任务: {task_name}")
+                save_path, count = downloader.download_announcements(target_task)
+                if count > 0:
+                    print(f"\n✓ 任务完成！成功下载 {count} 个文件到 {save_path}")
+                else:
+                    print("\n⚠ 未找到符合条件的公告")
+            except Exception as e:
+                print(f"\n✗ 任务失败: {e}")
+                sys.exit(1)
 
     def test_database(self, config_manager: ConfigManager):
         """测试数据库连接"""
@@ -1439,18 +1500,39 @@ class HKEXDownloaderCLI:
         if args.save_path:
             config_manager.config['settings']['save_path'] = args.save_path
 
-        downloader = HKEXDownloader(config_manager)
-
-        try:
-            print("开始从数据库获取股票列表并下载...")
-            save_path, count = downloader.download_announcements(task)
-            if count > 0:
-                print(f"\n✓ 数据库任务完成！成功下载 {count} 个文件到 {save_path}")
-            else:
-                print("\n⚠ 未找到符合条件的公告")
-        except Exception as e:
-            print(f"\n✗ 数据库任务失败: {e}")
-            sys.exit(1)
+        # 检查是否使用异步模式
+        import os
+        force_async = os.environ.get('HKEX_FORCE_ASYNC', '').lower() in ('true', '1', 'yes', 'on')
+        use_async = getattr(args, 'use_async', False) or force_async
+        
+        if use_async:
+            try:
+                from async_downloader import run_async_download
+                print("🚀 使用异步模式从数据库获取股票列表并下载...")
+                save_path, count = run_async_download(config_manager, task)
+                if count > 0:
+                    print(f"\n✓ 数据库任务完成！成功下载 {count} 个文件到 {save_path}")
+                else:
+                    print("\n⚠ 未找到符合条件的公告")
+            except ImportError:
+                print("❌ 异步模式需要安装额外依赖，回退到同步模式...")
+                use_async = force_async = False
+            except Exception as e:
+                print(f"\n✗ 数据库任务失败: {e}")
+                sys.exit(1)
+        
+        if not (use_async or force_async):
+            downloader = HKEXDownloader(config_manager)
+            try:
+                print("开始从数据库获取股票列表并下载...")
+                save_path, count = downloader.download_announcements(task)
+                if count > 0:
+                    print(f"\n✓ 数据库任务完成！成功下载 {count} 个文件到 {save_path}")
+                else:
+                    print("\n⚠ 未找到符合条件的公告")
+            except Exception as e:
+                print(f"\n✗ 数据库任务失败: {e}")
+                sys.exit(1)
 
     def handle_daemon_commands(self, args) -> bool:
         """处理守护者进程相关命令，返回True表示已处理"""
@@ -1644,7 +1726,7 @@ class HKEXDownloaderCLI:
 
         # 运行指定名称的任务
         if args.run_task:
-            self.run_named_task(args.run_task, self.config_manager)
+            self.run_named_task(args.run_task, self.config_manager, use_async=getattr(args, 'use_async', False))
             return
 
         # 运行单个股票下载任务
@@ -1656,7 +1738,7 @@ class HKEXDownloaderCLI:
             return
 
         # 运行配置文件中的任务
-        self.run_config_tasks(self.config_manager)
+        self.run_config_tasks(self.config_manager, use_async=getattr(args, 'use_async', False))
 
 
 def main():

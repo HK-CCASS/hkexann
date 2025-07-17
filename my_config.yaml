@@ -22,3 +22,11 @@ settings:
   max_results: 500
   save_path: D:\ANN\n24
   verbose_logging: true
+async:
+  enabled: true
+  max_concurrent: 10
+  requests_per_second: 2
+  timeout: 30
+  min_delay: 0.5
+  max_delay: 1.5
+  backoff_on_429: 60

@@ -9,7 +9,12 @@
       "Bash(/root/dev/projects/zen-mcp-server/.zen_venv/bin/python --version)",
       "Bash(/root/dev/projects/zen-mcp-server/.zen_venv/bin/python /root/dev/projects/zen-mcp-server/server.py --help)",
       "Bash(claude mcp:*)",
-      "mcp__zen__analyze"
+      "mcp__zen__analyze",
+      "mcp__zen__planner",
+      "mcp__zen__chat",
+      "Bash(python:*)",
+      "Bash(HKEX_FORCE_ASYNC=true python main.py --config config.yaml)",
+      "Bash(pkill:*)"
     ],
     "deny": []
   }

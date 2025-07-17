@@ -6,6 +6,12 @@ PyYAML>=5.4.1            # YAML配置文件解析
 beautifulsoup4>=4.9.3    # HTML解析
 pymysql>=1.0.2           # MySQL数据库连接
 
+# 异步依赖
+aiohttp>=3.8.0           # 异步HTTP客户端
+aiofiles>=0.8.0          # 异步文件操作
+tenacity>=8.0.0          # 重试机制（支持异步）
+tqdm>=4.62.0             # 进度条显示
+
 # 可选依赖
 opencc-python-reimplemented>=1.1.6  # 繁简体转换 (可选)
 schedule>=1.2.0          # 任务调度器 (守护者进程模式)
