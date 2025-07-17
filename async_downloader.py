@@ -85,6 +85,16 @@ class AsyncHKEXDownloader(HKEXDownloader):
         self.min_delay = async_config.get('min_delay', 0.5)
         self.max_delay = async_config.get('max_delay', 1.5)
         self.backoff_on_429 = async_config.get('backoff_on_429', 60)
+
+        # 休息功能配置
+        rest_config = async_config.get('rest', {})
+        self.rest_enabled = rest_config.get('enabled', True)
+        self.work_duration = rest_config.get('work_minutes', 30) * 60  # 转换为秒
+        self.rest_duration = rest_config.get('rest_minutes', 5) * 60   # 转换为秒
+
+        # 休息管理器
+        self.work_start_time = time.time()
+        self.last_rest_time = 0
         
         # 创建控制器
         self.semaphore = asyncio.Semaphore(self.max_concurrent)
@@ -104,6 +114,48 @@ class AsyncHKEXDownloader(HKEXDownloader):
         
         # 设置异步日志
         self.logger = logging.getLogger('async_downloader')
+
+    def _should_rest(self) -> bool:
+        """检查是否需要休息"""
+        if not self.rest_enabled:
+            return False
+
+        current_time = time.time()
+        work_elapsed = current_time - self.work_start_time
+
+        # 如果工作时间超过设定时长，需要休息
+        return work_elapsed >= self.work_duration
+
+    async def _take_rest(self):
+        """执行休息"""
+        if not self.rest_enabled:
+            return
+
+        current_time = time.time()
+        work_elapsed = current_time - self.work_start_time
+
+        self.logger.info(f"🛌 工作了 {work_elapsed/60:.1f} 分钟，开始休息 {self.rest_duration/60:.0f} 分钟以避免被封禁...")
+
+        # 创建休息进度条
+        rest_pbar = tqdm(
+            total=self.rest_duration,
+            desc="休息中",
+            unit="秒",
+            bar_format="{desc}: {percentage:3.0f}%|{bar}| {n:.0f}/{total:.0f} 秒 [剩余: {remaining}]"
+        )
+
+        # 分段休息，每秒更新一次进度条
+        for i in range(int(self.rest_duration)):
+            await asyncio.sleep(1)
+            rest_pbar.update(1)
+
+        rest_pbar.close()
+
+        # 重置工作开始时间
+        self.work_start_time = time.time()
+        self.last_rest_time = current_time
+
+        self.logger.info(f"😊 休息完成，继续工作...")
     
     async def __aenter__(self):
         """异步上下文管理器入口"""
@@ -315,6 +367,12 @@ class AsyncHKEXDownloader(HKEXDownloader):
         # 顺序处理每个股票（获取公告列表是同步的）
         for i, stock_code in enumerate(stock_codes, 1):
             try:
+                # 检查是否需要休息
+                if self._should_rest():
+                    pbar.set_description("休息中...")
+                    await self._take_rest()
+                    pbar.set_description("下载进度")
+
                 # 为每个股票创建单独的任务
                 stock_task = task.copy()
                 stock_task['stock_code'] = stock_code

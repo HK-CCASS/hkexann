@@ -1472,6 +1472,12 @@ async:
   max_delay: 2.68                     # 请求间最大延迟（秒）
   backoff_on_429: 60                 # 收到429状态码时的等待时间（秒）
 
+  # 休息功能配置（防止被封禁）
+  rest:
+    enabled: true                     # 是否启用休息功能
+    work_minutes: 30                  # 工作时长（分钟）
+    rest_minutes: 5                   # 休息时长（分钟）
+
 # 高级设置
 advanced:
   retry_attempts: 3
