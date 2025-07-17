@@ -656,7 +656,11 @@ class HKEXDownloader:
             if not stockcode:
                 raise ValueError("任务配置缺少 stock_code")
 
-            return self._download_single_stock(task, stockcode)
+            # 支持单个股票代码（字符串）和多个股票代码（列表）
+            if isinstance(stockcode, list):
+                return self._download_multiple_stocks(task, stockcode)
+            else:
+                return self._download_single_stock(task, stockcode)
 
         except Exception as e:
             raise Exception(f"下载过程中出现错误: {str(e)}")
@@ -748,6 +752,55 @@ class HKEXDownloader:
         logging.info(f"  失败数量: {error_count}")
         logging.info(f"  下载文件: {total_downloaded} 个")
 
+        return os.path.join(base_save_path, 'HKEX'), total_downloaded
+
+    def _download_multiple_stocks(self, task: Dict[str, Any], stock_codes: list) -> tuple[str, int]:
+        """下载多个股票的公告"""
+        if not stock_codes:
+            raise ValueError("股票代码列表为空")
+        
+        # 验证股票代码格式
+        for i, code in enumerate(stock_codes):
+            if not isinstance(code, str):
+                raise ValueError(f"股票代码列表中第{i+1}个元素必须为字符串，当前类型: {type(code)}")
+            if not code.strip():
+                raise ValueError(f"股票代码列表中第{i+1}个元素不能为空")
+        
+        logging.info(f"开始批量下载任务: {task.get('name', '未命名任务')}")
+        logging.info(f"股票代码列表: {', '.join(stock_codes)}")
+        
+        total_downloaded = 0
+        success_count = 0
+        error_count = 0
+        base_save_path = self.config.get('settings', 'save_path')
+        
+        for i, stock_code in enumerate(stock_codes, 1):
+            try:
+                logging.info(f"[{i}/{len(stock_codes)}] 处理股票: {stock_code}")
+                
+                # 为每个股票调用单个股票下载方法
+                save_path, count = self._download_single_stock(task, stock_code)
+                
+                if count > 0:
+                    total_downloaded += count
+                    success_count += 1
+                    logging.info(f"✓ 股票 {stock_code} 下载完成: {count} 个文件")
+                else:
+                    success_count += 1
+                    logging.info(f"✓ 股票 {stock_code} 无新文件")
+                
+            except Exception as e:
+                error_count += 1
+                logging.error(f"✗ 股票 {stock_code} 下载失败: {str(e)}")
+                # 继续处理下一个股票，不中断整个任务
+        
+        # 输出统计信息
+        logging.info(f"批量下载任务完成！")
+        logging.info(f"  总股票数: {len(stock_codes)}")
+        logging.info(f"  成功处理: {success_count}")
+        logging.info(f"  失败数量: {error_count}")
+        logging.info(f"  下载文件: {total_downloaded} 个")
+        
         return os.path.join(base_save_path, 'HKEX'), total_downloaded
 
     def _download_single_stock(self, task: Dict[str, Any], stockcode: str) -> tuple[str, int]:
