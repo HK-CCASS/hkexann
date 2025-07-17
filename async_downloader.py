@@ -180,25 +180,34 @@ class AsyncHKEXDownloader(HKEXDownloader):
         self.logger.info(f"[同步] 获取股票 {stockcode} 的公告列表")
         return super().get_announcement_list(stockcode, start_date, end_date, keywords)
     
-    async def async_download_file(self, url: str, filepath: str) -> bool:
+    async def async_download_file(self, url: str, filepath: str, title: str = None) -> bool:
         """异步下载文件"""
-        self.logger.debug(f"[异步] 开始下载文件: {os.path.basename(filepath)}")
+        filename = os.path.basename(filepath)
+        self.logger.debug(f"[异步] 开始下载文件: {filename}")
         await self._ensure_session()
-        
+
         try:
             status, content = await self._fetch_with_retry(url)
-            
+
             # 确保目录存在
             os.makedirs(os.path.dirname(filepath), exist_ok=True)
-            
+
             # 异步写入文件
             async with aiofiles.open(filepath, 'wb') as f:
                 await f.write(content)
-            
+
+            # 输出成功下载的文件信息
+            file_size = len(content)
+            size_mb = file_size / (1024 * 1024)
+            if title:
+                self.logger.info(f"✓ 下载完成: {filename} ({size_mb:.2f}MB) - {title}")
+            else:
+                self.logger.info(f"✓ 下载完成: {filename} ({size_mb:.2f}MB)")
+
             return True
-            
+
         except Exception as e:
-            self.logger.error(f"下载文件失败 {url}: {str(e)}")
+            self.logger.error(f"✗ 下载失败: {filename} - {str(e)}")
             return False
     
     async def async_download_stock_announcements(self, task: Dict[str, Any]) -> Tuple[str, int]:
@@ -212,7 +221,7 @@ class AsyncHKEXDownloader(HKEXDownloader):
         end_date = self.config.parse_date(task.get('end_date', 'today'))
         keywords = task.get('keywords', [])
         
-        self.logger.info(f"开始混合模式下载股票 {stockcode} 的公告（获取列表: 同步，文件下载: 异步）")
+        self.logger.info(f"开始混合模式下载股票 {stockcode} 的公告（获取列表: 同步，文件下载: 异步并发）")
         
         # 获取公告列表
         announcements = self.async_get_announcement_list(stockcode, start_date, end_date, keywords)
@@ -251,21 +260,35 @@ class AsyncHKEXDownloader(HKEXDownloader):
         # 并发下载所有文件
         if download_tasks:
             self.logger.info(f"准备下载 {len(download_tasks)} 个新文件")
-            
-            # 使用进度条
-            async def download_with_progress(task_info):
+
+            # 创建文件下载进度条
+            from tqdm.asyncio import tqdm as async_tqdm
+
+            # 使用进度条和详细信息
+            async def download_with_progress(task_info, pbar):
                 url, filepath, title = task_info
-                success = await self.async_download_file(url, filepath)
+                success = await self.async_download_file(url, filepath, title)
+                pbar.update(1)
                 if success:
                     return 1
                 return 0
-            
+
+            # 创建文件级别的进度条
+            file_pbar = async_tqdm(
+                total=len(download_tasks),
+                desc=f"下载文件[{stockcode}]",
+                unit="文件",
+                leave=False
+            )
+
             # 并发执行所有下载任务
             results = await asyncio.gather(
-                *[download_with_progress(task) for task in download_tasks],
+                *[download_with_progress(task, file_pbar) for task in download_tasks],
                 return_exceptions=True
             )
-            
+
+            file_pbar.close()
+
             # 统计成功数量
             for result in results:
                 if isinstance(result, int):
@@ -277,52 +300,40 @@ class AsyncHKEXDownloader(HKEXDownloader):
         return base_path, download_count
     
     async def async_download_multiple_stocks(self, task: Dict[str, Any], stock_codes: List[str]) -> Tuple[str, int]:
-        """异步下载多个股票的公告"""
+        """混合模式下载多个股票的公告（获取列表: 同步顺序，文件下载: 异步并发）"""
         if not stock_codes:
             raise ValueError("股票代码列表为空")
-        
-        self.logger.info(f"开始混合模式批量下载 {len(stock_codes)} 只股票的公告（获取列表: 同步，文件下载: 异步）")
-        
+
+        self.logger.info(f"开始混合模式批量下载 {len(stock_codes)} 只股票的公告（获取列表: 同步顺序，文件下载: 异步并发）")
+
         total_downloaded = 0
         base_save_path = self.config.get('settings', 'save_path')
-        
+
         # 创建进度条
         pbar = tqdm(total=len(stock_codes), desc="下载进度", unit="股票")
-        
-        # 创建所有股票的下载任务
-        async def download_single_stock_with_progress(stock_code: str):
+
+        # 顺序处理每个股票（获取公告列表是同步的）
+        for i, stock_code in enumerate(stock_codes, 1):
             try:
                 # 为每个股票创建单独的任务
                 stock_task = task.copy()
                 stock_task['stock_code'] = stock_code
-                
+
+                # 顺序执行单个股票的下载（内部文件下载仍然是异步并发的）
                 save_path, count = await self.async_download_stock_announcements(stock_task)
-                
+
+                total_downloaded += count
                 self.stats['success'] += 1
                 pbar.update(1)
-                pbar.set_postfix({'当前': stock_code, '文件数': count})
-                
-                return count
-                
+                pbar.set_postfix({'当前': stock_code, '文件数': count, '进度': f'{i}/{len(stock_codes)}'})
+
             except Exception as e:
                 self.stats['failed'] += 1
                 self.logger.error(f"股票 {stock_code} 下载失败: {str(e)}")
                 pbar.update(1)
-                return 0
-        
-        # 并发下载所有股票
-        results = await asyncio.gather(
-            *[download_single_stock_with_progress(code) for code in stock_codes],
-            return_exceptions=True
-        )
-        
-        # 统计结果
-        for result in results:
-            if isinstance(result, int):
-                total_downloaded += result
-        
+
         pbar.close()
-        
+
         # 输出统计信息
         self.logger.info(f"混合模式批量下载完成！")
         self.logger.info(f"  总股票数: {len(stock_codes)}")
@@ -330,7 +341,7 @@ class AsyncHKEXDownloader(HKEXDownloader):
         self.logger.info(f"  失败: {self.stats['failed']}")
         self.logger.info(f"  下载文件: {total_downloaded} 个")
         self.logger.info(f"  速率限制触发: {self.stats['rate_limited']} 次")
-        
+
         return os.path.join(base_save_path, 'HKEX'), total_downloaded
     
     async def async_download_announcements(self, task: Dict[str, Any]) -> Tuple[str, int]:
