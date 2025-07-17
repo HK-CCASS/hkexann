@@ -8,6 +8,8 @@ pymysql>=1.0.2           # MySQL数据库连接
 
 # 可选依赖
 opencc-python-reimplemented>=1.1.6  # 繁简体转换 (可选)
+schedule>=1.2.0          # 任务调度器 (守护者进程模式)
+psutil>=5.8.0           # 系统和进程监控 (守护者进程模式)
 
 # 开发依赖 (可选)
 pytest>=6.2.4           # 单元测试

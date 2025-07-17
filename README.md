@@ -2,6 +2,17 @@
 
 一个功能强大的港交所公告自动下载工具，支持批量下载、智能分类、数据库集成等功能。
 
+## 📖 目录
+
+- [⚡ 快速开始](#-快速开始---完整部署方案)
+- [🚀 功能特性](#-功能特性)
+- [🛠️ 安装](#️-安装)
+- [⚙️ 配置](#️-配置)
+- [🎯 使用方法](#-使用方法)
+  - [🤖 守护者进程模式](#-守护者进程模式-新功能)
+  - [🚀 完整部署方案](#-完整部署方案从历史数据到每日增量)
+- [📚 相关文档](#-相关文档)
+
 ## 🚀 功能特性
 
 - **批量下载**: 支持单个或多个股票的公告批量下载
@@ -13,12 +24,34 @@
 - **命令行界面**: 提供丰富的命令行参数
 - **日志记录**: 详细的操作日志和错误追踪
 - **繁简转换**: 支持繁简体中文关键字匹配
+- **🆕 守护者进程**: 支持后台定时自动下载，无需手动干预
+- **🔄 增量下载**: 智能增量模式，只下载最新公告避免重复
+- **📊 完整方案**: 提供从历史数据到每日增量的完整部署方案
+
+## ⚡ 快速开始 - 完整部署方案
+
+**想要今天开始获取所有股票公告，往后每天只获取新公告？**
+
+```bash
+# 1. 安装依赖
+pip install -r requirements.txt
+
+# 2. 配置数据库连接（编辑 config.yaml）
+# 3. 首次获取所有历史公告
+python main.py --db-stocks
+
+# 4. 启用每日增量下载
+python main.py --daemon-start
+```
+
+详细步骤请参考：[🚀 完整部署方案](#-完整部署方案从历史数据到每日增量) 或 [📋 完整设置指南](COMPLETE_SETUP_GUIDE.md)
 
 ## 📋 系统要求
 
 - Python 3.7+
 - Windows/Linux/macOS
 - 网络连接
+- MySQL数据库（可选，用于自动获取股票列表）
 
 ## 🛠️ 安装
 
@@ -102,6 +135,144 @@ python main.py --test-db
 # 从数据库获取股票列表并下载
 python main.py --db-stocks
 ```
+
+### 🤖 守护者进程模式 (新功能)
+
+守护者进程模式允许程序在后台自动运行，按照预设时间定期下载公告。
+
+#### 安装额外依赖
+```bash
+pip install schedule psutil
+```
+
+#### 基本使用
+```bash
+# 测试守护者进程配置
+python main.py --daemon-test
+
+# 启动守护者进程
+python main.py --daemon-start
+
+# 查看守护者进程状态
+python main.py --daemon-status
+
+# 停止守护者进程
+python main.py --daemon-stop
+
+# 重启守护者进程
+python main.py --daemon-restart
+```
+
+#### 便捷脚本
+```bash
+# 使用Python控制脚本（推荐）
+python daemon_control.py start
+python daemon_control.py status
+python daemon_control.py stop
+
+# Windows用户
+daemon.bat start
+daemon.bat status
+
+# Linux/macOS用户
+./daemon.sh start
+./daemon.sh status
+```
+
+#### 配置守护者进程
+在 `config.yaml` 中添加：
+```yaml
+daemon:
+  enabled: true                     # 启用守护者进程
+  schedule:
+    times: ["09:00", "18:00"]       # 每天9点和18点执行
+  runtime:
+    check_interval: 60              # 检查间隔(秒)
+    max_retries: 3                  # 失败重试次数
+  tasks:
+    run_all_enabled: true           # 执行所有启用的任务
+    run_on_startup: false           # 启动时立即执行
+```
+
+详细使用说明请参考：[守护者进程使用指南](DAEMON_USAGE.md)
+
+#### 🗄️ 数据库任务（自动获取活跃股票）
+
+守护者进程支持每天自动从数据库获取活跃股票列表并下载公告：
+
+```yaml
+download_tasks:
+  - name: "数据库活跃股票任务"
+    from_database: true              # 从数据库获取股票
+    query: null                      # 使用默认查询获取活跃股票
+    start_date: "2024-01-01"
+    end_date: "today"
+    enabled: true
+    database_config:
+      batch_size: 50                 # 每批处理50个股票
+      delay_between_batches: 5       # 批次间延迟5秒
+```
+
+数据库任务详细说明：[数据库任务指南](DATABASE_TASKS.md)
+
+#### 🚀 完整部署方案：从历史数据到每日增量
+
+**场景**：今天开始获取所有股票的公告，往后每天只获取新的公告
+
+##### 第一阶段：获取历史公告（一次性）
+
+```bash
+# 1. 安装依赖
+pip install schedule psutil
+
+# 2. 测试数据库连接
+python main.py --test-db
+
+# 3. 首次完整下载（使用数据库获取所有股票）
+python main.py --db-stocks
+```
+
+##### 第二阶段：启用每日增量下载
+
+修改 `config.yaml` 配置：
+
+```yaml
+daemon:
+  enabled: true
+  schedule:
+    times: ["09:30", "18:30"]       # 每天两次
+  tasks:
+    run_all_enabled: true
+    incremental_mode: true          # 启用增量模式
+    incremental_days: 3             # 只获取最近3天
+
+download_tasks:
+  - name: "数据库活跃股票任务"
+    from_database: true             # 自动获取所有活跃股票
+    query: null                     # 默认查询获取活跃股票
+    start_date: "2024-01-01"
+    end_date: "today"
+    enabled: true
+    database_config:
+      batch_size: 50                # 每批50个股票
+      delay_between_batches: 5      # 批次间延迟5秒
+      skip_on_error: true           # 跳过失败的股票
+```
+
+启动守护者进程：
+
+```bash
+# 测试配置
+python main.py --daemon-test
+
+# 启动守护者进程
+python main.py --daemon-start
+
+# 查看运行状态
+python main.py --daemon-status
+```
+
+**结果**：系统将每天自动从数据库获取所有活跃股票，并只下载最近3天的公告，确保获取新公告的同时避免重复下载。
 
 ### 配置文件任务
 
@@ -377,6 +548,23 @@ Victor Suen
 ## 📜 许可证
 
 MIT License
+
+## 📚 相关文档
+
+- [📋 完整设置指南](COMPLETE_SETUP_GUIDE.md) - **推荐** 从零开始的完整部署方案
+- [守护者进程使用指南](DAEMON_USAGE.md) - 详细的守护者进程配置和使用方法
+- [数据库任务指南](DATABASE_TASKS.md) - 数据库集成和自动获取股票的完整说明
+- [守护者进程常见问题](DAEMON_FAQ.md) - 常见问题解答和故障排除
+- [守护者进程详细说明](DAEMON_README.md) - 守护者进程的技术细节
+
+## 🎯 典型使用场景
+
+| 场景 | 配置方案 | 适用对象 |
+|------|----------|----------|
+| 个人研究 | 单股票 + 手动执行 | 个人投资者 |
+| 小规模监控 | 多股票 + 定时执行 | 小型机构 |
+| 大规模监控 | 数据库 + 守护者进程 | 大型机构 |
+| 完整历史 + 增量 | 完整部署方案 | 专业用户 |
 
 ## 🙏 致谢
 

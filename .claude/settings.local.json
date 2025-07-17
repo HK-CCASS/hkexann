@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(claude --debug)",
+      "Bash(find:*)",
+      "Bash(claude config show)",
+      "Bash(claude config --help)",
+      "Bash(claude config list)",
+      "Bash(/root/dev/projects/zen-mcp-server/.zen_venv/bin/python --version)",
+      "Bash(/root/dev/projects/zen-mcp-server/.zen_venv/bin/python /root/dev/projects/zen-mcp-server/server.py --help)",
+      "Bash(claude mcp:*)",
+      "mcp__zen__analyze"
+    ],
+    "deny": []
+  }
+}
