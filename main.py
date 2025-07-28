@@ -532,8 +532,8 @@ class HKEXDownloader:
         # 初始化公告分类器
         self.classifier = AnnouncementClassifier(self.config.config)
 
-    def get_stockid(self, stockcode: str) -> str:
-        """根据股票代码获取股票ID"""
+    def get_stockid_and_name(self, stockcode: str) -> tuple[str, str]:
+        """根据股票代码获取股票ID和公司名称"""
         for attempt in range(self.retry_attempts):
             try:
                 url = f'https://www1.hkexnews.hk/search/prefix.do?&callback=callback&lang=ZH&type=A&name={stockcode}&market=SEHK&_=1653821865437'
@@ -546,9 +546,12 @@ class HKEXDownloader:
                 if 'stockInfo' not in data_json or not data_json['stockInfo']:
                     raise ValueError(f"未找到股票代码 {stockcode} 对应的信息")
 
-                stockid = data_json["stockInfo"][0]['stockId']
-                logging.info(f"股票代码 {stockcode} 对应的 StockID: {stockid}")
-                return stockid
+                stock_info = data_json["stockInfo"][0]
+                stockid = stock_info['stockId']
+                stock_name = stock_info.get('name', '').strip()
+                
+                logging.info(f"股票代码 {stockcode} 对应的 StockID: {stockid}, 公司名称: {stock_name}")
+                return stockid, stock_name
 
             except Exception as e:
                 if attempt < self.retry_attempts - 1:
@@ -558,12 +561,17 @@ class HKEXDownloader:
                 else:
                     raise Exception(f"获取股票 {stockcode} 信息失败: {str(e)}")
 
+    def get_stockid(self, stockcode: str) -> str:
+        """根据股票代码获取股票ID（保持向后兼容）"""
+        stockid, _ = self.get_stockid_and_name(stockcode)
+        return stockid
+
     def get_announcement_list(self, stockcode: str, start_date: datetime, end_date: datetime,
-                              keywords: List[str] = None) -> List[Dict]:
-        """获取公告列表"""
+                              keywords: List[str] = None) -> tuple[List[Dict], str]:
+        """获取公告列表和公司名称"""
         try:
-            # 获取 stockId
-            stockid = self.get_stockid(stockcode)
+            # 获取 stockId 和公司名称
+            stockid, stock_name = self.get_stockid_and_name(stockcode)
 
             # 处理关键字
             search_keyword = keywords[-1] if keywords else ""
@@ -635,7 +643,7 @@ class HKEXDownloader:
                         continue
 
                 logging.info(f"找到 {len(announcements)} 个符合条件的公告")
-                return announcements
+                return announcements, stock_name
 
             except json.JSONDecodeError as e:
                 logging.error(f"JSON 解析错误: {str(e)}")
@@ -815,8 +823,8 @@ class HKEXDownloader:
         logging.info(
             f"股票代码: {stockcode}, 日期范围: {start_date.strftime('%Y-%m-%d')} 至 {end_date.strftime('%Y-%m-%d')}")
 
-        # 获取公告列表
-        announcements = self.get_announcement_list(stockcode, start_date, end_date, keywords)
+        # 获取公告列表和公司名称
+        announcements, stock_name = self.get_announcement_list(stockcode, start_date, end_date, keywords)
 
         if not announcements:
             logging.warning("未找到符合条件的公告")
@@ -857,7 +865,13 @@ class HKEXDownloader:
                     os.makedirs(savepath)
                     logging.info(f"创建分类目录: {savepath}")
 
-                filepath = os.path.join(savepath, f"{ann['date']}_{stockcode}-{ann['title'][:filename_length]}.pdf")
+                # 清理公司名称和公告标题中的特殊字符
+                clean_stock_name = re.sub(r'[<>:"/\\|?*]', '-', stock_name)
+                clean_title = re.sub(r'[<>:"/\\|?*]', '-', ann['title'])
+                
+                # 新的文件命名格式：时间——股票代码——公司名称-公告名称
+                filename = f"{ann['date']}——{stockcode}——{clean_stock_name}-{clean_title[:filename_length]}.pdf"
+                filepath = os.path.join(savepath, filename)
 
                 # 检查文件是否已存在
                 if os.path.exists(filepath) and not overwrite:

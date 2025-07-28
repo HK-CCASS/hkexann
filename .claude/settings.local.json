@@ -14,7 +14,8 @@
       "mcp__zen__chat",
       "Bash(python:*)",
       "Bash(HKEX_FORCE_ASYNC=true python main.py --config config.yaml)",
-      "Bash(pkill:*)"
+      "Bash(pkill:*)",
+      "Bash(mkdir:*)"
     ],
     "deny": []
   }

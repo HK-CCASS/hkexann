@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import random
+import re
 import time
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional, Tuple
@@ -227,8 +228,8 @@ class AsyncHKEXDownloader(HKEXDownloader):
         return super().get_stockid(stockcode)
     
     def async_get_announcement_list(self, stockcode: str, start_date: datetime, 
-                                        end_date: datetime, keywords: List[str] = None) -> List[Dict]:
-        """获取公告列表（同步调用父类方法）"""
+                                        end_date: datetime, keywords: List[str] = None) -> tuple[List[Dict], str]:
+        """获取公告列表和公司名称（同步调用父类方法）"""
         self.logger.info(f"[同步] 获取股票 {stockcode} 的公告列表")
         return super().get_announcement_list(stockcode, start_date, end_date, keywords)
     
@@ -275,8 +276,8 @@ class AsyncHKEXDownloader(HKEXDownloader):
         
         self.logger.info(f"开始混合模式下载股票 {stockcode} 的公告（获取列表: 同步，文件下载: 异步并发）")
         
-        # 获取公告列表
-        announcements = self.async_get_announcement_list(stockcode, start_date, end_date, keywords)
+        # 获取公告列表和公司名称
+        announcements, stock_name = self.async_get_announcement_list(stockcode, start_date, end_date, keywords)
         
         if not announcements:
             return "", 0
@@ -301,7 +302,13 @@ class AsyncHKEXDownloader(HKEXDownloader):
             else:
                 savepath = base_path
             
-            filepath = os.path.join(savepath, f"{ann['date']}_{stockcode}-{ann['title'][:filename_length]}.pdf")
+            # 清理公司名称和公告标题中的特殊字符
+            clean_stock_name = re.sub(r'[<>:"/\\|?*]', '-', stock_name)
+            clean_title = re.sub(r'[<>:"/\\|?*]', '-', ann['title'])
+            
+            # 新的文件命名格式：时间——股票代码——公司名称-公告名称
+            filename = f"{ann['date']}——{stockcode}——{clean_stock_name}-{clean_title[:filename_length]}.pdf"
+            filepath = os.path.join(savepath, filename)
             
             # 检查文件是否已存在
             if os.path.exists(filepath) and not overwrite:
