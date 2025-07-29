@@ -51,12 +51,12 @@ class DatabaseManager:
                 return False
 
             connection_params = {'host': db_config.get('host', 'localhost'), 'port': db_config.get('port', 3306),
-                'user': db_config.get('user', 'root'), 'password': db_config.get('password', ''),
-                'database': db_config.get('database', 'ccass'),
-                'charset': db_config.get('connection', {}).get('charset', 'utf8mb4'),
-                'autocommit': db_config.get('connection', {}).get('autocommit', True),
-                'connect_timeout': db_config.get('connection', {}).get('connect_timeout', 30),
-                'read_timeout': db_config.get('connection', {}).get('read_timeout', 30)}
+                                 'user': db_config.get('user', 'root'), 'password': db_config.get('password', ''),
+                                 'database': db_config.get('database', 'ccass'),
+                                 'charset': db_config.get('connection', {}).get('charset', 'utf8mb4'),
+                                 'autocommit': db_config.get('connection', {}).get('autocommit', True),
+                                 'connect_timeout': db_config.get('connection', {}).get('connect_timeout', 30),
+                                 'read_timeout': db_config.get('connection', {}).get('read_timeout', 30)}
 
             self.connection = pymysql.connect(**connection_params)
             self.is_connected = True
@@ -277,122 +277,126 @@ class AnnouncementClassifier:
 
         return variants
 
-    def classify_announcement(self, title: str) -> Tuple[str, str]:
-        """
-        根据公告标题分类公告
 
+    def classify_announcement_enhanced(self, announcement_data: Dict[str, Any]) -> Tuple[str, str, float]:
+        """
+        纯净分类：直接使用LONG_TEXT作为分类结果，不进行任何映射
+        
         Args:
-            title: 公告标题
-
+            announcement_data: 包含标题、日期、股票信息、原始数据等的字典
+            
         Returns:
-            Tuple[str, str]: (主分类, 子分类)
+            Tuple[str, str, float]: (主分类, 子分类, 置信度)
         """
-        if not self.enabled:
-            return "99_其他", "其他"
-
-        # 清理标题，移除特殊字符但保留中文
-        clean_title = re.sub(r'[^\w\s\u4e00-\u9fff\u3400-\u4dbf]', '', title)
-
-        # 生成标题的繁简体版本
-        title_variants = self._convert_text(title.lower())
-        clean_title_variants = self._convert_text(clean_title.lower())
-
-        # 按优先级排序分类
-        best_match = None
-        best_priority = float('inf')
-
-        # 遍历一级分类
-        for main_category, main_config in self.categories.items():
-            if main_category == 'enabled':
-                continue
-
-            # 检查是否是新的三层结构
-            if isinstance(main_config, dict) and 'code' in main_config:
-                # 新的三层结构：一级分类 -> 二级分组 -> 三级分类
-                for group_name, group_config in main_config.items():
-                    if group_name in ['code', 'name', 'count', 'keywords', 'priority']:
-                        continue
-
-                    if isinstance(group_config, dict):
-                        # 检查是否有 subcategories
-                        if 'subcategories' in group_config:
-                            subcategories = group_config['subcategories']
-                            for sub_category, config in subcategories.items():
-                                if isinstance(config, dict):
-                                    keywords = config.get('keywords', [])
-                                    priority = config.get('priority', 5)
-
-                                    # 检查关键词匹配
-                                    if self._check_keyword_match(keywords, title_variants, clean_title_variants):
-                                        if priority < best_priority:
-                                            best_match = (main_category, sub_category)
-                                            best_priority = priority
-                        else:
-                            # 直接的子分类
-                            keywords = group_config.get('keywords', [])
-                            priority = group_config.get('priority', 5)
-
-                            if self._check_keyword_match(keywords, title_variants, clean_title_variants):
-                                if priority < best_priority:
-                                    best_match = (main_category, group_name)
-                                    best_priority = priority
-            else:
-                # 旧的二层结构：主分类 -> 子分类
-                if isinstance(main_config, dict):
-                    for sub_category, config in main_config.items():
-                        if isinstance(config, dict):
-                            keywords = config.get('keywords', [])
-                            priority = config.get('priority', 5)
-
-                            if self._check_keyword_match(keywords, title_variants, clean_title_variants):
-                                if priority < best_priority:
-                                    best_match = (main_category, sub_category)
-                                    best_priority = priority
-
-        # 如果没有匹配，返回其他分类
-        if best_match is None:
-            return "99_其他", "其他"
-
-        return best_match
-
-    def _check_keyword_match(self, keywords: List[str], title_variants: List[str],
-                             clean_title_variants: List[str]) -> bool:
-        """
-        检查关键词是否匹配
-
-        Args:
-            keywords: 关键词列表
-            title_variants: 标题变体列表
-            clean_title_variants: 清理后的标题变体列表
-
-        Returns:
-            bool: 是否匹配
-        """
-        for keyword in keywords:
-            # 生成关键词的繁简体版本
-            keyword_variants = self._convert_text(keyword.lower())
-
-            # 检查所有变体组合（使用更宽松的匹配）
-            for title_var in title_variants + clean_title_variants:
-                for keyword_var in keyword_variants:
-                    # 使用包含匹配和部分匹配
-                    if (keyword_var in title_var or any(
-                        kw_part in title_var for kw_part in keyword_var.split() if len(kw_part) > 1)):
-                        return True
-        return False
-
+        raw_data = announcement_data.get('raw_data', {})
+        long_text = raw_data.get('LONG_TEXT', '')
+        
+        # 直接使用LONG_TEXT作为分类结果
+        if long_text:
+            # 清理LONG_TEXT
+            cleaned_text = self._clean_long_text(long_text)
+            if cleaned_text:
+                # 直接使用清理后的LONG_TEXT作为分类
+                return cleaned_text, cleaned_text, 1.0
+        
+        # 没有LONG_TEXT时的备用处理
+        title = announcement_data.get('title', '')
+        return "其他", title or "未知", 0.5
+    
+    
+    def _clean_long_text(self, long_text: str) -> str:
+        """清理LONG_TEXT中的乱码字符和HTML转义"""
+        if not long_text:
+            return ""
+        
+        # 清理HTML转义字符
+        text = long_text
+        text = re.sub(r'u003c[^>]*u003e', '', text)  # 移除HTML标签转义
+        text = re.sub(r'<[^>]*>', '', text)          # 移除HTML标签
+        text = re.sub(r'-#x2f;', '/', text)          # 转换斜杠转义
+        text = re.sub(r'u0027', "'", text)           # 转换单引号转义
+        text = re.sub(r'&amp;', '&', text)           # 转换&符号转义
+        text = re.sub(r'&lt;', '<', text)            # 转换<符号转义
+        text = re.sub(r'&gt;', '>', text)            # 转换>符号转义
+        text = re.sub(r'&quot;', '"', text)          # 转换双引号转义
+        
+        # 清理多余空格
+        text = re.sub(r'\s+', ' ', text).strip()
+        
+        return text
+    
     def get_folder_path(self, main_category: str, sub_category: str) -> str:
         """
-        获取分类对应的文件夹路径
+        获取分类对应的文件夹路径，基于LONG_TEXT自动分配三级目录结构
 
         Args:
-            main_category: 主分类
-            sub_category: 子分类
+            main_category: 主分类 (清理后的LONG_TEXT)
+            sub_category: 子分类 (清理后的LONG_TEXT)
 
         Returns:
             str: 文件夹路径
         """
-        return os.path.join(main_category, sub_category)
+        # 清理路径中的不安全字符
+        def clean_path_name(name: str) -> str:
+            # 移除或替换文件系统不支持的字符
+            name = re.sub(r'[<>:"/\\|?*]', '_', name)  # 替换不安全字符
+            name = re.sub(r'\s+', ' ', name)           # 规范化空格
+            name = name.strip('._- ')                  # 移除首尾的特殊字符
+            # 限制长度
+            if len(name) > 80:
+                name = name[:80] + "..."
+            return name or "未知"
+        
+        # 分析LONG_TEXT结构，自动分配三级目录
+        def parse_longtext_structure(longtext: str) -> tuple:
+            """解析LONG_TEXT的层级结构"""
+            # 处理最常见的格式：一级分类 - [二级分类 / 三级分类]
+            
+            # 1. 简单单级分类（如：月報表、展示文件）
+            if ' - [' not in longtext and '/' not in longtext:
+                return (longtext, "", "")
+            
+            # 2. 带中括号的分类（如：公告及通告 - [董事名單和他們的地位和作用]）
+            if ' - [' in longtext and ']' in longtext:
+                parts = longtext.split(' - [', 1)
+                level1 = parts[0].strip()
+                remaining = parts[1].rstrip(']')
+                
+                # 检查是否有斜杠分隔的子分类
+                if ' / ' in remaining:
+                    sub_parts = remaining.split(' / ')
+                    level2 = sub_parts[0].strip()
+                    level3 = ' / '.join(sub_parts[1:]).strip()
+                    return (level1, level2, level3)
+                else:
+                    return (level1, remaining.strip(), "")
+            
+            # 3. 直接斜杠分隔（如：財務報表/環境、社會及管治資料）
+            if '/' in longtext:
+                parts = longtext.split('/', 1)
+                level1 = parts[0].strip()
+                level2 = parts[1].strip()
+                return (level1, level2, "")
+            
+            # 4. 默认情况
+            return (longtext, "", "")
+        
+        # 解析目录结构
+        level1, level2, level3 = parse_longtext_structure(main_category)
+        
+        # 清理各级目录名称
+        clean_level1 = clean_path_name(level1)
+        clean_level2 = clean_path_name(level2) if level2 else ""
+        clean_level3 = clean_path_name(level3) if level3 else ""
+        
+        # 构建目录路径
+        path_parts = [clean_level1]
+        if clean_level2:
+            path_parts.append(clean_level2)
+        if clean_level3:
+            path_parts.append(clean_level3)
+        
+        return os.path.join(*path_parts)
 
     def get_classification_stats(self, announcements: List[Dict]) -> Dict[str, int]:
         """
@@ -407,7 +411,7 @@ class AnnouncementClassifier:
         stats = {}
 
         for ann in announcements:
-            main_cat, sub_cat = self.classify_announcement(ann['title'])
+            main_cat, sub_cat, confidence = self.classify_announcement_enhanced(ann)
             full_category = f"{main_cat}/{sub_cat}"
             stats[full_category] = stats.get(full_category, 0) + 1
 
@@ -442,17 +446,18 @@ class ConfigManager:
     def get_default_config(self) -> Dict[str, Any]:
         """获取默认配置"""
         return {'settings': {'save_path': os.path.join(os.path.expanduser("~"), "Desktop"), 'filename_length': 220,
-            'language': 'zh', 'max_results': 500, 'verbose_logging': True, 'log_file': 'hkex_downloader.log'},
-            'date_range': {'start_date': '2024-01-01', 'end_date': 'today'}, 'download_tasks': [],
-            'advanced': {'retry_attempts': 3, 'request_delay': 1, 'timeout': 30, 'overwrite_existing': False,
-                'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/101.0.4951.67 Safari/537.36'}}
+                             'language': 'zh', 'max_results': 500, 'verbose_logging': True,
+                             'log_file': 'hkex_downloader.log'},
+                'date_range': {'start_date': '2024-01-01', 'end_date': 'today'}, 'download_tasks': [],
+                'advanced': {'retry_attempts': 3, 'request_delay': 1, 'timeout': 30, 'overwrite_existing': False,
+                             'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/101.0.4951.67 Safari/537.36'}}
 
     def create_default_config(self):
         """创建默认配置文件"""
         default_config = self.get_default_config()
         default_config['download_tasks'] = [
             {'name': '默认下载任务', 'stock_code': '00081', 'start_date': '2024-01-01', 'end_date': 'today',
-                'keywords': [], 'enabled': True}]
+             'keywords': [], 'enabled': True}]
 
         try:
             with open(self.config_file, 'w', encoding='utf-8') as f:
@@ -549,7 +554,7 @@ class HKEXDownloader:
                 stock_info = data_json["stockInfo"][0]
                 stockid = stock_info['stockId']
                 stock_name = stock_info.get('name', '').strip()
-                
+
                 logging.info(f"股票代码 {stockcode} 对应的 StockID: {stockid}, 公司名称: {stock_name}")
                 return stockid, stock_name
 
@@ -590,14 +595,15 @@ class HKEXDownloader:
             logging.info(f"搜索URL: {url}")
 
             headers = {"sec-ch-ua-platform": "\"Windows\"", "x-requested-with": "XMLHttpRequest",
-                "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
-                "accept": "text/html, */*; q=0.01",
-                "sec-ch-ua": "\"Not)A;Brand\";v=\"8\", \"Chromium\";v=\"138\", \"Google Chrome\";v=\"138\"",
-                "sec-ch-ua-mobile": "?0", "sec-fetch-site": "same-origin", "sec-fetch-mode": "cors",
-                "sec-fetch-dest": "empty", "referer": "https://www1.hkexnews.hk/search/titlesearch.xhtml?lang=zh",
-                "accept-encoding": "gzip, deflate, br, zstd", "accept-language": "zh-CN,zh;q=0.9",
-                # "cookie": "TS38b16b21027=086f2721efab2000642dbe64e6deea82232cbbc6623ec72c04dbb365e5fabaffc676ede33e5ea917086e538f3c113000ddf73ed4c79657e7aa42a671f5d22a7baf96133d9aa7f533998a6e8a9ff9aa432321b18be489d59c7c54e761b51a3c42",
-                "priority": "u=0, i"}
+                       "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
+                       "accept": "text/html, */*; q=0.01",
+                       "sec-ch-ua": "\"Not)A;Brand\";v=\"8\", \"Chromium\";v=\"138\", \"Google Chrome\";v=\"138\"",
+                       "sec-ch-ua-mobile": "?0", "sec-fetch-site": "same-origin", "sec-fetch-mode": "cors",
+                       "sec-fetch-dest": "empty",
+                       "referer": "https://www1.hkexnews.hk/search/titlesearch.xhtml?lang=zh",
+                       "accept-encoding": "gzip, deflate, br, zstd", "accept-language": "zh-CN,zh;q=0.9",
+                       # "cookie": "TS38b16b21027=086f2721efab2000642dbe64e6deea82232cbbc6623ec72c04dbb365e5fabaffc676ede33e5ea917086e538f3c113000ddf73ed4c79657e7aa42a671f5d22a7baf96133d9aa7f533998a6e8a9ff9aa432321b18be489d59c7c54e761b51a3c42",
+                       "priority": "u=0, i"}
 
             # 发送请求
             response = self.session.get(url, timeout=self.timeout, headers=headers)
@@ -615,6 +621,7 @@ class HKEXDownloader:
                 data = data.replace('"[{', '[{').replace('}]"', '}]').replace('\\', "").replace('u2013', "-").replace(
                     'u0026', "-")
                 data_json = json.loads(data)
+                print(f"原数据:　｛data_json｝")
 
                 if not data_json or 'result' not in data_json or not data_json['result']:
                     logging.warning("未找到符合条件的公告")
@@ -622,6 +629,7 @@ class HKEXDownloader:
 
                 announcements = []
                 for item in data_json['result']:
+                    print(f"item: {item}")
                     try:
                         # 获取标题
                         title = item['TITLE'].replace('/', "-")
@@ -636,7 +644,29 @@ class HKEXDownloader:
                         date_object = datetime.strptime(anndate, "%d-%m-%Y")
                         formatted_date = date_object.strftime("%Y-%m-%d")
 
-                        announcements.append({'date': formatted_date, 'title': title, 'link': pdf_link})
+                        # 在搜索时就进行分类，利用更多上下文信息
+                        announcement_data = {
+                            'date': formatted_date, 
+                            'title': title, 
+                            'link': pdf_link,
+                            'stock_code': stockcode,
+                            'stock_name': stock_name,
+                            # 原始港交所数据，用于增强分类
+                            'raw_data': item
+                        }
+
+                        # 进行增强分类
+                        if hasattr(self, 'classifier') and self.classifier.enabled:
+                            main_category, sub_category, confidence = self.classifier.classify_announcement_enhanced(
+                                announcement_data
+                            )
+                            announcement_data.update({
+                                'main_category': main_category,
+                                'sub_category': sub_category,
+                                'classification_confidence': confidence
+                            })
+
+                        announcements.append(announcement_data)
 
                     except Exception as e:
                         logging.warning(f"处理公告项目时发生错误: {str(e)}")
@@ -766,29 +796,29 @@ class HKEXDownloader:
         """下载多个股票的公告"""
         if not stock_codes:
             raise ValueError("股票代码列表为空")
-        
+
         # 验证股票代码格式
         for i, code in enumerate(stock_codes):
             if not isinstance(code, str):
-                raise ValueError(f"股票代码列表中第{i+1}个元素必须为字符串，当前类型: {type(code)}")
+                raise ValueError(f"股票代码列表中第{i + 1}个元素必须为字符串，当前类型: {type(code)}")
             if not code.strip():
-                raise ValueError(f"股票代码列表中第{i+1}个元素不能为空")
-        
+                raise ValueError(f"股票代码列表中第{i + 1}个元素不能为空")
+
         logging.info(f"开始批量下载任务: {task.get('name', '未命名任务')}")
         logging.info(f"股票代码列表: {', '.join(stock_codes)}")
-        
+
         total_downloaded = 0
         success_count = 0
         error_count = 0
         base_save_path = self.config.get('settings', 'save_path')
-        
+
         for i, stock_code in enumerate(stock_codes, 1):
             try:
                 logging.info(f"[{i}/{len(stock_codes)}] 处理股票: {stock_code}")
-                
+
                 # 为每个股票调用单个股票下载方法
                 save_path, count = self._download_single_stock(task, stock_code)
-                
+
                 if count > 0:
                     total_downloaded += count
                     success_count += 1
@@ -796,19 +826,18 @@ class HKEXDownloader:
                 else:
                     success_count += 1
                     logging.info(f"✓ 股票 {stock_code} 无新文件")
-                
+
             except Exception as e:
                 error_count += 1
-                logging.error(f"✗ 股票 {stock_code} 下载失败: {str(e)}")
-                # 继续处理下一个股票，不中断整个任务
-        
+                logging.error(f"✗ 股票 {stock_code} 下载失败: {str(e)}")  # 继续处理下一个股票，不中断整个任务
+
         # 输出统计信息
         logging.info(f"批量下载任务完成！")
         logging.info(f"  总股票数: {len(stock_codes)}")
         logging.info(f"  成功处理: {success_count}")
         logging.info(f"  失败数量: {error_count}")
         logging.info(f"  下载文件: {total_downloaded} 个")
-        
+
         return os.path.join(base_save_path, 'HKEX'), total_downloaded
 
     def _download_single_stock(self, task: Dict[str, Any], stockcode: str) -> tuple[str, int]:
@@ -852,9 +881,23 @@ class HKEXDownloader:
 
         for i, ann in enumerate(announcements, 1):
             try:
-                # 使用分类器确定文件保存路径
+                # 使用搜索时已经进行的分类，或进行新的分类
                 if self.classifier.enabled:
-                    main_category, sub_category = self.classifier.classify_announcement(ann['title'])
+                    # 优先使用搜索时的分类结果
+                    if 'main_category' in ann and 'sub_category' in ann:
+                        main_category = ann['main_category']
+                        sub_category = ann['sub_category']
+                        confidence = ann.get('classification_confidence', 0.7)
+                        
+                        # 如果置信度较低，重新分类
+                        if confidence < 0.8:
+                            enhanced_main, enhanced_sub, new_confidence = self.classifier.classify_announcement_enhanced(ann)
+                            if new_confidence > confidence:
+                                main_category, sub_category = enhanced_main, enhanced_sub
+                    else:
+                        # 兜底：使用增强分类（基于LONG_TEXT）
+                        main_category, sub_category, confidence = self.classifier.classify_announcement_enhanced(ann)
+                    
                     category_path = self.classifier.get_folder_path(main_category, sub_category)
                     savepath = os.path.join(base_path, category_path)
                 else:
@@ -868,7 +911,7 @@ class HKEXDownloader:
                 # 清理公司名称和公告标题中的特殊字符
                 clean_stock_name = re.sub(r'[<>:"/\\|?*]', '-', stock_name)
                 clean_title = re.sub(r'[<>:"/\\|?*]', '-', ann['title'])
-                
+
                 # 新的文件命名格式：时间——股票代码——公司名称-公告名称
                 filename = f"{ann['date']}_{stockcode}_{clean_stock_name}_{clean_title[:filename_length]}.pdf"
                 filepath = os.path.join(savepath, filename)
@@ -886,10 +929,29 @@ class HKEXDownloader:
 
                 response = self.session.get(ann['link'], timeout=self.timeout)
                 if response.status_code == 200:
+                    # 检查文件大小
+                    content_size = len(response.content)
+                    if content_size < 5120:  # 小于5KB的文件可能有问题
+                        logging.warning(f"⚠️  文件大小异常: {os.path.basename(filepath)} ({content_size}字节) - 可能下载失败或为错误页面")
+                        # 检查内容是否为HTML错误页面
+                        content_text = response.content.decode('utf-8', errors='ignore').lower()
+                        if '<html' in content_text or 'error' in content_text or '404' in content_text:
+                            logging.error(f"❌ 下载到错误页面: {ann['title']} - 跳过保存")
+                            continue
+                    
                     with open(filepath, 'wb') as f:
                         f.write(response.content)
                     download_count += 1
-                    logging.info(f"✓ 成功下载: {os.path.basename(filepath)}")
+                    
+                    # 显示文件大小信息
+                    if content_size >= 1024 * 1024:  # >= 1MB
+                        size_info = f"({content_size/(1024*1024):.2f}MB)"
+                    elif content_size >= 1024:  # >= 1KB
+                        size_info = f"({content_size/1024:.1f}KB)"
+                    else:
+                        size_info = f"({content_size}字节)"
+                    
+                    logging.info(f"✓ 成功下载: {os.path.basename(filepath)} {size_info}")
                 else:
                     logging.warning(f"下载失败 (HTTP {response.status_code}): {ann['title']}")
 
@@ -1199,15 +1261,15 @@ class DaemonManager:
         is_running = self.is_daemon_running()
 
         status = {'enabled': self.daemon_config.get('enabled', False), 'running': is_running, 'pid': pid,
-            'pid_file': self.pid_file, 'log_file': self.log_file, 'config': self.daemon_config}
+                  'pid_file': self.pid_file, 'log_file': self.log_file, 'config': self.daemon_config}
 
         if is_running and DAEMON_AVAILABLE and psutil and pid:
             try:
                 process = psutil.Process(pid)
                 status.update(
                     {'start_time': datetime.fromtimestamp(process.create_time()).strftime('%Y-%m-%d %H:%M:%S'),
-                        'memory_usage': f"{process.memory_info().rss / 1024 / 1024:.1f} MB",
-                        'cpu_percent': f"{process.cpu_percent():.1f}%"})
+                     'memory_usage': f"{process.memory_info().rss / 1024 / 1024:.1f} MB",
+                     'cpu_percent': f"{process.cpu_percent():.1f}%"})
             except Exception as e:
                 status['process_info_error'] = str(e)
 
@@ -1246,7 +1308,7 @@ class HKEXDownloaderCLI:
     def create_parser(self) -> argparse.ArgumentParser:
         """创建命令行参数解析器"""
         parser = argparse.ArgumentParser(description='HKEX 公告下载器 - 命令行版本',
-            formatter_class=argparse.RawDescriptionHelpFormatter, epilog="""
+                                         formatter_class=argparse.RawDescriptionHelpFormatter, epilog="""
 使用示例:
   %(prog)s                                    # 使用配置文件中的任务
   %(prog)s -s 00001                          # 下载单个股票的所有公告
@@ -1280,7 +1342,7 @@ class HKEXDownloaderCLI:
         parser.add_argument('--list-tasks', action='store_true', help='列出配置文件中的所有任务')
 
         parser.add_argument('--run-task', help='运行指定名称的任务')
-        
+
         parser.add_argument('--async', dest='use_async', action='store_true', help='使用异步模式下载（大幅提升速度）')
 
         parser.add_argument('-v', '--verbose', action='store_true', help='启用详细输出')
@@ -1351,9 +1413,9 @@ class HKEXDownloaderCLI:
         """运行单个任务"""
         # 构建任务配置
         task = {'name': '命令行任务', 'stock_code': args.stock_code,
-            'start_date': args.start or config_manager.get('date_range', 'start_date', '2024-01-01'),
-            'end_date': args.end or config_manager.get('date_range', 'end_date', 'today'),
-            'keywords': args.keywords or [], 'enabled': True}
+                'start_date': args.start or config_manager.get('date_range', 'start_date', '2024-01-01'),
+                'end_date': args.end or config_manager.get('date_range', 'end_date', 'today'),
+                'keywords': args.keywords or [], 'enabled': True}
 
         # 如果指定了保存路径，临时更新配置
         if args.save_path:
@@ -1404,7 +1466,7 @@ class HKEXDownloaderCLI:
         # 检查是否使用异步模式（仅命令行参数或环境变量）
         import os
         force_async = os.environ.get('HKEX_FORCE_ASYNC', '').lower() in ('true', '1', 'yes', 'on')
-        
+
         if use_async or force_async:
             print("🚀 使用异步模式执行任务...")
             try:
@@ -1424,7 +1486,7 @@ class HKEXDownloaderCLI:
             except ImportError:
                 print("❌ 异步模式需要安装额外依赖，回退到同步模式...")
                 use_async = force_async = False
-        
+
         if not (use_async or force_async):
             downloader = HKEXDownloader(config_manager)
             for i, task in enumerate(enabled_tasks, 1):
@@ -1478,7 +1540,7 @@ class HKEXDownloaderCLI:
             except Exception as e:
                 print(f"\n✗ 任务失败: {e}")
                 sys.exit(1)
-        
+
         if not (use_async or force_async):
             downloader = HKEXDownloader(config_manager)
             try:
@@ -1506,9 +1568,9 @@ class HKEXDownloaderCLI:
         """运行数据库任务"""
         # 构建数据库任务配置
         task = {'name': '数据库股票下载任务', 'from_database': True, 'query': args.db_query,  # 可能为None，使用默认查询
-            'start_date': args.start or config_manager.get('date_range', 'start_date', '2024-01-01'),
-            'end_date': args.end or config_manager.get('date_range', 'end_date', 'today'),
-            'keywords': args.keywords or [], 'enabled': True}
+                'start_date': args.start or config_manager.get('date_range', 'start_date', '2024-01-01'),
+                'end_date': args.end or config_manager.get('date_range', 'end_date', 'today'),
+                'keywords': args.keywords or [], 'enabled': True}
 
         # 如果指定了保存路径，临时更新配置
         if args.save_path:
@@ -1518,7 +1580,7 @@ class HKEXDownloaderCLI:
         import os
         force_async = os.environ.get('HKEX_FORCE_ASYNC', '').lower() in ('true', '1', 'yes', 'on')
         use_async = getattr(args, 'use_async', False) or force_async
-        
+
         if use_async:
             try:
                 from async_downloader import run_async_download
@@ -1534,7 +1596,7 @@ class HKEXDownloaderCLI:
             except Exception as e:
                 print(f"\n✗ 数据库任务失败: {e}")
                 sys.exit(1)
-        
+
         if not (use_async or force_async):
             downloader = HKEXDownloader(config_manager)
             try:
@@ -1552,8 +1614,8 @@ class HKEXDownloaderCLI:
         """处理守护者进程相关命令，返回True表示已处理"""
         # 检查是否有守护者进程相关的参数
         daemon_args = [getattr(args, 'daemon_start', False), getattr(args, 'daemon_stop', False),
-            getattr(args, 'daemon_restart', False), getattr(args, 'daemon_status', False),
-            getattr(args, 'daemon_test', False)]
+                       getattr(args, 'daemon_restart', False), getattr(args, 'daemon_status', False),
+                       getattr(args, 'daemon_test', False)]
 
         if not any(daemon_args):
             return False

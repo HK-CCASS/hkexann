@@ -15,7 +15,11 @@
       "Bash(python:*)",
       "Bash(HKEX_FORCE_ASYNC=true python main.py --config config.yaml)",
       "Bash(pkill:*)",
-      "Bash(mkdir:*)"
+      "Bash(mkdir:*)",
+      "Bash(pip install:*)",
+      "Bash(grep:*)",
+      "Bash(rm:*)",
+      "Bash(ls:*)"
     ],
     "deny": []
   }
