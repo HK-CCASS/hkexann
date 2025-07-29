@@ -870,7 +870,7 @@ class HKEXDownloader:
                 clean_title = re.sub(r'[<>:"/\\|?*]', '-', ann['title'])
                 
                 # 新的文件命名格式：时间——股票代码——公司名称-公告名称
-                filename = f"{ann['date']}——{stockcode}——{clean_stock_name}-{clean_title[:filename_length]}.pdf"
+                filename = f"{ann['date']}_{stockcode}_{clean_stock_name}_{clean_title[:filename_length]}.pdf"
                 filepath = os.path.join(savepath, filename)
 
                 # 检查文件是否已存在
