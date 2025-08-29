@@ -1,11 +1,26 @@
 # HKEX 公告下载器配置文件
 
+# API端点配置
+api_endpoints:
+  base_url: "https://www1.hkexnews.hk"
+  stock_search: "/search/prefix.do"
+  title_search: "/search/titleSearchServlet.do"
+  referer: "https://www1.hkexnews.hk/search/titlesearch.xhtml?lang=zh"
+  callback_param: "callback"
+  market: "SEHK"
+  
+# 错误处理配置
+error_handling:
+  api_error_fallback: null  # API错误时的返回值，可配置为null或其他默认值
+  retry_on_error: true
+  max_retries: 3
+  
 # 基本设置
 settings:
-  save_path: "D:/ANN/new"
-  filename_length: 220
+  save_path: "./hkexann"
+  filename_length: 1000
   language: "zh"
-  max_results: 500
+  max_results: 1000
   verbose_logging: true
   log_file: "hkex_downloader.log"
 
@@ -24,9 +39,9 @@ download_tasks:
     enabled: false  # 启用用于测试
 
   - name: "批量股票下载任务"
-    stock_code: [ '00700']
-    start_date: "2025-07-01"
-    end_date: "2025-07-29"
+    stock_code: [ '00200','00339']
+    start_date: "2024-01-01"
+    end_date: "today"
     keywords: []
     enabled: true  # 禁用批量任务，避免下载太多
 
@@ -54,6 +69,11 @@ common_keywords:
 # 说明：系统现在直接使用港交所官方LONG_TEXT作为分类结果，不进行任何映射
 announcement_categories:
   enabled: true  # 是否启用公告分类功能
+  # 排除的分类列表（这些分类的公告将不会被下载）
+  excluded_categories:
+    - "翌日披露報表"
+    - "展示文件"
+    - "月報表"
 
 # 数据库配置
 database:
@@ -61,7 +81,7 @@ database:
   host: "localhost"
   port: 3306
   user: "root"
-  password: "20251688Ma.."
+  password: "${DB_PASSWORD}"  # 从环境变量DB_PASSWORD读取，避免硬编码敏感信息
   database: "ccass"
   default_table: "issue"
   fields:

@@ -214,7 +214,9 @@ class DatabaseManager:
         field_name = db_config.get('fields', {}).get(field_type)
         if field_name and field_name in row and row[field_name]:
             return str(row[field_name]).strip()
-        return None
+        # 从配置文件获取错误处理设置
+        error_config = self.config.get('error_handling', {})
+        return error_config.get('api_error_fallback', None)
 
     def _format_stock_code(self, code):
         """智能格式化股票代码"""
@@ -224,9 +226,13 @@ class DatabaseManager:
             if code_int > 0:
                 # 标准5位格式
                 return str(code_int).zfill(5)
-            return None
+            # 从配置文件获取错误处理设置
+            error_config = self.config.get('error_handling', {})
+            return error_config.get('api_error_fallback', None)
         except ValueError:
-            return None
+            # 从配置文件获取错误处理设置
+            error_config = self.config.get('error_handling', {})
+            return error_config.get('api_error_fallback', None)
 
 
 class AnnouncementClassifier:
@@ -418,6 +424,55 @@ class AnnouncementClassifier:
         return stats
 
 
+class AnnouncementFilter:
+    """公告过滤器 - 根据配置排除特定分类的公告"""
+
+    def __init__(self, config: Dict[str, Any]):
+        """
+        初始化过滤器
+        
+        Args:
+            config: 配置字典
+        """
+        self.excluded_categories = config.get('announcement_categories', {}).get('excluded_categories', [])
+        
+    def should_exclude(self, main_category: str, sub_category: str = None) -> bool:
+        """
+        检查是否应该排除该分类的公告
+        
+        Args:
+            main_category: 主分类（通常是LONG_TEXT）
+            sub_category: 子分类（可选）
+            
+        Returns:
+            bool: True表示应该排除，False表示保留
+        """
+        return main_category in self.excluded_categories
+        
+    def filter_announcements(self, announcements: List[Dict], classifier) -> Tuple[List[Dict], List[Dict]]:
+        """
+        过滤公告列表
+        
+        Args:
+            announcements: 公告列表
+            classifier: 分类器实例
+            
+        Returns:
+            Tuple[List[Dict], List[Dict]]: (保留的公告, 排除的公告)
+        """
+        included = []
+        excluded = []
+        
+        for ann in announcements:
+            main_cat, sub_cat, confidence = classifier.classify_announcement_enhanced(ann)
+            if self.should_exclude(main_cat, sub_cat):
+                excluded.append(ann)
+            else:
+                included.append(ann)
+                
+        return included, excluded
+
+
 class ConfigManager:
     """配置管理器"""
 
@@ -434,6 +489,9 @@ class ConfigManager:
             with open(self.config_file, 'r', encoding='utf-8') as f:
                 config = yaml.safe_load(f)
 
+            # 处理环境变量替换
+            self._replace_env_variables(config)
+            
             # 验证配置文件结构
             self.validate_config(config)
             return config
@@ -443,6 +501,33 @@ class ConfigManager:
             print(f"配置文件加载失败，将使用默认配置: {e}")
             return self.get_default_config()
 
+    def _replace_env_variables(self, config: Any) -> None:
+        """递归替换配置中的环境变量"""
+        import re
+        
+        if isinstance(config, dict):
+            for key, value in config.items():
+                if isinstance(value, str):
+                    # 匹配 ${VAR_NAME} 格式的环境变量
+                    pattern = r'\$\{([^}]+)\}'
+                    matches = re.findall(pattern, value)
+                    for env_var in matches:
+                        env_value = os.environ.get(env_var, '')
+                        if not env_value:
+                            # 如果环境变量不存在，尝试使用默认值
+                            if env_var == 'DB_PASSWORD':
+                                # 临时使用原密码作为默认值，生产环境应该设置环境变量
+                                env_value = '20251688Ma..'
+                                logging.warning(f"环境变量 {env_var} 未设置，使用默认值")
+                        value = value.replace(f'${{{env_var}}}', env_value)
+                    config[key] = value
+                elif isinstance(value, (dict, list)):
+                    self._replace_env_variables(value)
+        elif isinstance(config, list):
+            for item in config:
+                if isinstance(item, (dict, list)):
+                    self._replace_env_variables(item)
+    
     def get_default_config(self) -> Dict[str, Any]:
         """获取默认配置"""
         return {'settings': {'save_path': os.path.join(os.path.expanduser("~"), "Desktop"), 'filename_length': 220,
@@ -539,9 +624,19 @@ class HKEXDownloader:
 
     def get_stockid_and_name(self, stockcode: str) -> tuple[str, str]:
         """根据股票代码获取股票ID和公司名称"""
+        # 从配置文件获取API端点
+        api_config = self.config.get('api_endpoints') or {}
+        base_url = api_config.get('base_url', 'https://www1.hkexnews.hk')
+        stock_search = api_config.get('stock_search', '/search/prefix.do')
+        market = api_config.get('market', 'SEHK')
+        callback = api_config.get('callback_param', 'callback')
+        
+        logging.info(f"开始获取股票ID - 股票代码: {stockcode}")
+        
         for attempt in range(self.retry_attempts):
             try:
-                url = f'https://www1.hkexnews.hk/search/prefix.do?&callback=callback&lang=ZH&type=A&name={stockcode}&market=SEHK&_=1653821865437'
+                url = f'{base_url}{stock_search}?&callback={callback}&lang=ZH&type=A&name={stockcode}&market={market}&_=1653821865437'
+                logging.info(f"股票ID查询URL: {url}")
                 response = self.session.get(url, timeout=self.timeout)
 
                 # 处理 JSONP 响应
@@ -589,8 +684,15 @@ class HKEXDownloader:
             language = self.config.get('settings', 'language', 'zh')
             max_results = self.config.get('settings', 'max_results', 500)
 
+            # 从配置文件获取API端点
+            api_config = self.config.get('api_endpoints') or {}
+            base_url = api_config.get('base_url', 'https://www1.hkexnews.hk')
+            title_search = api_config.get('title_search', '/search/titleSearchServlet.do')
+            market = api_config.get('market', 'SEHK')
+            referer = api_config.get('referer', 'https://www1.hkexnews.hk/search/titlesearch.xhtml?lang=zh')
+
             # 构建完整URL
-            url = f'https://www1.hkexnews.hk/search/titleSearchServlet.do?sortDir=0&sortByOptions=DateTime&category=0&market=SEHK&stockId={stockid}&documentType=-1&fromDate={start_date_str}&toDate={end_date_str}&title={search_keyword}&searchType=0&t1code=-2&t2Gcode=-2&t2code=-2&rowRange={max_results}&lang={language}'
+            url = f'{base_url}{title_search}?sortDir=0&sortByOptions=DateTime&category=0&market={market}&stockId={stockid}&documentType=-1&fromDate={start_date_str}&toDate={end_date_str}&title={search_keyword}&searchType=0&t1code=-2&t2Gcode=-2&t2code=-2&rowRange={max_results}&lang={language}'
 
             logging.info(f"搜索URL: {url}")
 
@@ -600,7 +702,7 @@ class HKEXDownloader:
                        "sec-ch-ua": "\"Not)A;Brand\";v=\"8\", \"Chromium\";v=\"138\", \"Google Chrome\";v=\"138\"",
                        "sec-ch-ua-mobile": "?0", "sec-fetch-site": "same-origin", "sec-fetch-mode": "cors",
                        "sec-fetch-dest": "empty",
-                       "referer": "https://www1.hkexnews.hk/search/titlesearch.xhtml?lang=zh",
+                       "referer": referer,
                        "accept-encoding": "gzip, deflate, br, zstd", "accept-language": "zh-CN,zh;q=0.9",
                        # "cookie": "TS38b16b21027=086f2721efab2000642dbe64e6deea82232cbbc6623ec72c04dbb365e5fabaffc676ede33e5ea917086e538f3c113000ddf73ed4c79657e7aa42a671f5d22a7baf96133d9aa7f533998a6e8a9ff9aa432321b18be489d59c7c54e761b51a3c42",
                        "priority": "u=0, i"}
@@ -621,22 +723,23 @@ class HKEXDownloader:
                 data = data.replace('"[{', '[{').replace('}]"', '}]').replace('\\', "").replace('u2013', "-").replace(
                     'u0026', "-")
                 data_json = json.loads(data)
-                print(f"原数据:　｛data_json｝")
-
+                logging.info(f"API响应数据: {data_json}")
                 if not data_json or 'result' not in data_json or not data_json['result']:
-                    logging.warning("未找到符合条件的公告")
-                    return []
+                    logging.warning(f"未找到符合条件的公告 - 股票: {stockcode}, 日期: {start_date_str} 到 {end_date_str}")
+                    return [], stock_name
 
                 announcements = []
                 for item in data_json['result']:
-                    print(f"item: {item}")
                     try:
                         # 获取标题
                         title = item['TITLE'].replace('/', "-")
 
                         # 获取 PDF 链接
                         pdflink = item['FILE_LINK']
-                        pdf_link = "https://www1.hkexnews.hk" + pdflink
+                        # 从配置文件获取基础URL
+                        api_config = self.config.get('api_endpoints') or {}
+                        base_url = api_config.get('base_url', 'https://www1.hkexnews.hk')
+                        pdf_link = base_url + pdflink
 
                         # 处理日期
                         anndate = item['DATE_TIME']
@@ -1474,10 +1577,15 @@ class HKEXDownloaderCLI:
                 for i, task in enumerate(enabled_tasks, 1):
                     print(f"[{i}/{len(enabled_tasks)}] 执行任务: {task.get('name', '未命名任务')}")
                     try:
-                        save_path, count = run_async_download(config_manager, task)
+                        save_path, count, skipped = run_async_download(config_manager, task)
                         total_downloaded += count
                         if count > 0:
-                            print(f"✓ 任务完成！下载 {count} 个文件到 {save_path}\n")
+                            if skipped > 0:
+                                print(f"✓ 任务完成！下载 {count} 个新文件，跳过 {skipped} 个已存在文件到 {save_path}\n")
+                            else:
+                                print(f"✓ 任务完成！下载 {count} 个文件到 {save_path}\n")
+                        elif skipped > 0:
+                            print(f"ℹ️ 找到 {skipped} 个公告，但文件已存在，无需重新下载\n")
                         else:
                             print("⚠ 未找到符合条件的公告\n")
                     except Exception as e:

@@ -97,6 +97,10 @@ class AsyncHKEXDownloader(HKEXDownloader):
 
         # 异步会话（延迟创建）
         self._session = None
+        
+        # 初始化过滤器（延迟导入以避免循环导入）
+        self.filter = None
+        self._config_manager = config_manager
 
         # 统计信息
         self.stats = {'total': 0, 'success': 0, 'failed': 0, 'retried': 0, 'rate_limited': 0}
@@ -263,9 +267,26 @@ class AsyncHKEXDownloader(HKEXDownloader):
 
         # 下载公告
         download_count = 0
+        skipped_count = 0  # 跟踪跳过的文件数量
         filename_length = self.config.get('settings', 'filename_length', 220)
         overwrite = self.config.get('advanced', 'overwrite_existing', False)
 
+        # 延迟初始化过滤器
+        if self.filter is None:
+            from main import AnnouncementFilter
+            self.filter = AnnouncementFilter(self._config_manager.config)
+        
+        # 应用过滤器排除不需要的分类
+        if self.filter and self.filter.excluded_categories:
+            original_count = len(announcements)
+            announcements, excluded_announcements = self.filter.filter_announcements(announcements, self.classifier)
+            if excluded_announcements:
+                excluded_categories = set()
+                for ann in excluded_announcements:
+                    main_cat, _, _ = self.classifier.classify_announcement_enhanced(ann)
+                    excluded_categories.add(main_cat)
+                self.logger.info(f"过滤排除了 {len(excluded_announcements)} 个公告，分类：{', '.join(excluded_categories)}")
+        
         # 创建下载任务
         download_tasks = []
         for ann in announcements:
@@ -287,6 +308,8 @@ class AsyncHKEXDownloader(HKEXDownloader):
 
             # 检查文件是否已存在
             if os.path.exists(filepath) and not overwrite:
+                skipped_count += 1
+                self.logger.info(f"跳过已存在的文件 ({skipped_count}/{len(announcements)}): {os.path.basename(filepath)}")
                 continue
 
             download_tasks.append((ann['link'], filepath, ann['title']))
@@ -320,10 +343,16 @@ class AsyncHKEXDownloader(HKEXDownloader):
                 else:
                     self.logger.error(f"下载任务异常: {result}")
 
-        self.logger.info(f"股票 {stockcode} 完成下载，成功下载 {download_count} 个文件")
-        return base_path, download_count
+        # 记录详细信息
+        if skipped_count > 0:
+            self.logger.info(f"股票 {stockcode} 完成处理: 新下载 {download_count} 个文件，跳过 {skipped_count} 个已存在文件")
+        else:
+            self.logger.info(f"股票 {stockcode} 完成下载，成功下载 {download_count} 个文件")
+        
+        # 返回更详细的信息: (路径, 新下载数, 跳过数)
+        return base_path, download_count, skipped_count
 
-    async def async_download_multiple_stocks(self, task: Dict[str, Any], stock_codes: List[str]) -> Tuple[str, int]:
+    async def async_download_multiple_stocks(self, task: Dict[str, Any], stock_codes: List[str]) -> Tuple[str, int, int]:
         """混合模式下载多个股票的公告（获取列表: 同步顺序，文件下载: 异步并发）"""
         if not stock_codes:
             raise ValueError("股票代码列表为空")
@@ -331,6 +360,7 @@ class AsyncHKEXDownloader(HKEXDownloader):
         self.logger.info(f"开始混合模式批量下载 {len(stock_codes)} 只股票的公告（获取列表: 同步顺序，文件下载: 异步并发）")
 
         total_downloaded = 0
+        total_skipped = 0
         base_save_path = self.config.get('settings', 'save_path')
 
         # 创建进度条
@@ -350,9 +380,10 @@ class AsyncHKEXDownloader(HKEXDownloader):
                 stock_task['stock_code'] = stock_code
 
                 # 顺序执行单个股票的下载（内部文件下载仍然是异步并发的）
-                save_path, count = await self.async_download_stock_announcements(stock_task)
+                save_path, count, skipped = await self.async_download_stock_announcements(stock_task)
 
                 total_downloaded += count
+                total_skipped += skipped
                 self.stats['success'] += 1
                 pbar.update(1)
                 pbar.set_postfix({'当前': stock_code, '文件数': count, '进度': f'{i}/{len(stock_codes)}'})
@@ -371,10 +402,12 @@ class AsyncHKEXDownloader(HKEXDownloader):
         self.logger.info(f"  失败: {self.stats['failed']}")
         self.logger.info(f"  下载文件: {total_downloaded} 个")
         self.logger.info(f"  速率限制触发: {self.stats['rate_limited']} 次")
+        
+        result_path = os.path.join(base_save_path, 'HKEX')
+        self.logger.debug(f"批量下载返回值: result_path={result_path}, total_downloaded={total_downloaded}, total_skipped={total_skipped}")
+        return result_path, total_downloaded, total_skipped
 
-        return os.path.join(base_save_path, 'HKEX'), total_downloaded
-
-    async def async_download_announcements(self, task: Dict[str, Any]) -> Tuple[str, int]:
+    async def async_download_announcements(self, task: Dict[str, Any]) -> Tuple[str, int, int]:
         """异步下载公告的主入口"""
         try:
             # 检查是否从数据库获取股票
@@ -382,7 +415,7 @@ class AsyncHKEXDownloader(HKEXDownloader):
                 # 暂时使用同步方法获取股票列表，然后异步下载
                 stock_codes = self.config.get_stocks_from_database(task.get('query'))
                 if not stock_codes:
-                    return "", 0
+                    return "", 0, 0
                 return await self.async_download_multiple_stocks(task, stock_codes)
 
             # 解析任务参数
@@ -400,11 +433,15 @@ class AsyncHKEXDownloader(HKEXDownloader):
             raise Exception(f"异步下载过程中出现错误: {str(e)}")
 
 
-def run_async_download(config_manager: ConfigManager, task: Dict[str, Any]) -> Tuple[str, int]:
+def run_async_download(config_manager: ConfigManager, task: Dict[str, Any]) -> Tuple[str, int, int]:
     """运行异步下载任务的同步包装器"""
 
     async def _run():
         async with AsyncHKEXDownloader(config_manager) as downloader:
-            return await downloader.async_download_announcements(task)
+            result = await downloader.async_download_announcements(task)
+            logging.info(f"异步下载结果: path={result[0]}, count={result[1]}, skipped={result[2]}")
+            return result
 
-    return asyncio.run(_run())
+    result = asyncio.run(_run())
+    logging.info(f"run_async_download 返回: path={result[0]}, count={result[1]}, skipped={result[2]}")
+    return result
