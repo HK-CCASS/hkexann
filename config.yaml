@@ -58,12 +58,53 @@ download_tasks:
       delay_between_batches: 5       # 批次间延迟(秒)
       skip_on_error: true            # 单个股票失败时是否跳过继续处理
 
-# 常用搜索关键字预设
+# 常用搜索关键字预设 - 用于主分类识别
 common_keywords:
-  financial_reports: ["財務報告", "年報", "中期報告", "季報"]
-  announcements: ["業績", "分派", "股息", "配股"]
-  corporate_actions: ["合併", "收購", "重組", "分拆"]
-  regulatory: ["須予披露", "關連交易", "內幕消息"]
+  # 关键字分类配置 - 用作主分类
+  share_buyback: 
+    chinese: ["回購", "股份回購", "購回股份", "購回"]
+    english: ["Share Buyback", "Buyback", "Share Repurchase", "Repurchase"]
+    folder_name: "回购"
+  
+  convertible_bonds:
+    chinese: ["可转换", "可轉換", "轉換債券", "可換股債券"]
+    english: ["Convertible Bonds", "Convertible", "Convertible Securities"]
+    folder_name: "可转换"
+  
+  stock_split:
+    chinese: ["拆股", "股份分拆", "股票分割"]
+    english: ["Stock Split", "Share Split", "Stock Subdivision"]
+    folder_name: "拆股"
+  
+  reverse_stock_split:
+    chinese: ["合股", "股份合併", "股票合併"]
+    english: ["Reverse Stock Split", "Share Consolidation", "Stock Consolidation"]
+    folder_name: "合股"
+  
+  ipo:
+    chinese: ["首次公開發售", "首次公开发行", "新股上市", "IPO"]
+    english: ["Initial Public Offering", "IPO", "Public Offering"]
+    folder_name: "IPO"
+  
+  privatization:
+    chinese: ["私有化", "除牌", "退市"]
+    english: ["Privatization", "Going Private", "Delisting"]
+    folder_name: "私有化"
+  
+  full_buyout:
+    chinese: ["全購", "全面收購", "強制性收購"]
+    english: ["Full Buyout", "Mandatory Offer", "General Offer"]
+    folder_name: "全购"
+  
+  placing:
+    chinese: ["配股", "配售", "股份配售"]
+    english: ["Placing", "Share Placing", "Equity Placing"]
+    folder_name: "配股"
+  
+  rights_issue:
+    chinese: ["供股", "權利股", "認股權"]
+    english: ["Rights Issue", "Rights Offering", "Rights"]
+    folder_name: "供股"
 
 # 公告分类配置（现已改为纯净LONG_TEXT分类）
 # 说明：系统现在直接使用港交所官方LONG_TEXT作为分类结果，不进行任何映射

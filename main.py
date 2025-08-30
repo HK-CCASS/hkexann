@@ -242,6 +242,9 @@ class AnnouncementClassifier:
         self.config = config
         self.categories = config.get('announcement_categories', {})
         self.enabled = self.categories.get('enabled', True)
+        
+        # 加载关键字配置
+        self.keyword_config = config.get('common_keywords', {})
 
         # 初始化繁简体转换器
         try:
@@ -283,126 +286,201 @@ class AnnouncementClassifier:
 
         return variants
 
-
-    def classify_announcement_enhanced(self, announcement_data: Dict[str, Any]) -> Tuple[str, str, float]:
+    def _match_keyword_category(self, title: str) -> Tuple[str, float]:
         """
-        纯净分类：直接使用LONG_TEXT作为分类结果，不进行任何映射
+        根据公告标题匹配关键字分类
+        
+        Args:
+            title: 公告标题
+            
+        Returns:
+            Tuple[str, float]: (关键字分类名称, 匹配置信度)
+        """
+        if not self.keyword_config or not title:
+            return "", 0.0
+        
+        # 将标题转换为繁简体版本进行匹配
+        title_variants = self._convert_text(title.lower())
+        
+        for category_key, category_config in self.keyword_config.items():
+            if not isinstance(category_config, dict):
+                continue
+                
+            # 获取中英文关键字列表
+            chinese_keywords = category_config.get('chinese', [])
+            english_keywords = category_config.get('english', [])
+            folder_name = category_config.get('folder_name', category_key)
+            
+            # 检查中文关键字匹配
+            for keyword in chinese_keywords:
+                for title_variant in title_variants:
+                    if keyword.lower() in title_variant:
+                        return folder_name, 0.9
+            
+            # 检查英文关键字匹配
+            for keyword in english_keywords:
+                for title_variant in title_variants:
+                    if keyword.lower() in title_variant:
+                        return folder_name, 0.9
+        
+        return "", 0.0
+
+    def classify_announcement_enhanced(self, announcement_data: Dict[str, Any]) -> Tuple[str, str, str, float]:
+        """
+        增强分类：关键字分类 + LONG_TEXT分类
         
         Args:
             announcement_data: 包含标题、日期、股票信息、原始数据等的字典
             
         Returns:
-            Tuple[str, str, float]: (主分类, 子分类, 置信度)
+            Tuple[str, str, str, float]: (关键字分类, 主分类, 子分类, 置信度)
         """
+        title = announcement_data.get('title', '')
         raw_data = announcement_data.get('raw_data', {})
         long_text = raw_data.get('LONG_TEXT', '')
+
+        # 第一步：关键字分类匹配
+        keyword_category, keyword_confidence = self._match_keyword_category(title)
         
-        # 直接使用LONG_TEXT作为分类结果
+        # 第二步：LONG_TEXT分类
+        main_category = ""
+        sub_category = ""
+        longtext_confidence = 0.0
+        
         if long_text:
             # 清理LONG_TEXT
             cleaned_text = self._clean_long_text(long_text)
             if cleaned_text:
-                # 直接使用清理后的LONG_TEXT作为分类
-                return cleaned_text, cleaned_text, 1.0
-        
-        # 没有LONG_TEXT时的备用处理
-        title = announcement_data.get('title', '')
-        return "其他", title or "未知", 0.5
-    
-    
+                main_category = cleaned_text
+                sub_category = cleaned_text
+                longtext_confidence = 1.0
+
+        # 如果没有LONG_TEXT，使用标题作为备用
+        if not main_category:
+            main_category = "其他"
+            sub_category = title or "未知"
+            longtext_confidence = 0.5
+
+        # 计算总体置信度
+        if keyword_category:
+            total_confidence = (keyword_confidence + longtext_confidence) / 2
+        else:
+            total_confidence = longtext_confidence
+
+        return keyword_category, main_category, sub_category, total_confidence
+
     def _clean_long_text(self, long_text: str) -> str:
         """清理LONG_TEXT中的乱码字符和HTML转义"""
         if not long_text:
             return ""
-        
+
         # 清理HTML转义字符
         text = long_text
         text = re.sub(r'u003c[^>]*u003e', '', text)  # 移除HTML标签转义
-        text = re.sub(r'<[^>]*>', '', text)          # 移除HTML标签
-        text = re.sub(r'-#x2f;', '/', text)          # 转换斜杠转义
-        text = re.sub(r'u0027', "'", text)           # 转换单引号转义
-        text = re.sub(r'&amp;', '&', text)           # 转换&符号转义
-        text = re.sub(r'&lt;', '<', text)            # 转换<符号转义
-        text = re.sub(r'&gt;', '>', text)            # 转换>符号转义
-        text = re.sub(r'&quot;', '"', text)          # 转换双引号转义
-        
+        text = re.sub(r'<[^>]*>', '', text)  # 移除HTML标签
+        text = re.sub(r'-#x2f;', '/', text)  # 转换斜杠转义
+        text = re.sub(r'u0027', "'", text)  # 转换单引号转义
+        text = re.sub(r'&amp;', '&', text)  # 转换&符号转义
+        text = re.sub(r'&lt;', '<', text)  # 转换<符号转义
+        text = re.sub(r'&gt;', '>', text)  # 转换>符号转义
+        text = re.sub(r'&quot;', '"', text)  # 转换双引号转义
+
         # 清理多余空格
         text = re.sub(r'\s+', ' ', text).strip()
-        
-        return text
-    
-    def get_folder_path(self, main_category: str, sub_category: str) -> str:
-        """
-        获取分类对应的文件夹路径，基于LONG_TEXT自动分配三级目录结构
 
+        return text
+
+    def get_folder_path(self, keyword_category: str, main_category: str, sub_category: str) -> str:
+        """
+        获取分类对应的文件夹路径，支持关键字分类的三级目录结构
+        
         Args:
+            keyword_category: 关键字分类（如：回购、供股等）
             main_category: 主分类 (清理后的LONG_TEXT)
             sub_category: 子分类 (清理后的LONG_TEXT)
 
         Returns:
             str: 文件夹路径
         """
+
         # 清理路径中的不安全字符
         def clean_path_name(name: str) -> str:
+            if not name:
+                return ""
             # 移除或替换文件系统不支持的字符
             name = re.sub(r'[<>:"/\\|?*]', '_', name)  # 替换不安全字符
-            name = re.sub(r'\s+', ' ', name)           # 规范化空格
-            name = name.strip('._- ')                  # 移除首尾的特殊字符
+            name = re.sub(r'\s+', ' ', name)  # 规范化空格
+            name = name.strip('._- ')  # 移除首尾的特殊字符
             # 限制长度
             if len(name) > 80:
                 name = name[:80] + "..."
             return name or "未知"
-        
-        # 分析LONG_TEXT结构，自动分配三级目录
+
+        # 分析LONG_TEXT结构，自动分配子目录
         def parse_longtext_structure(longtext: str) -> tuple:
             """解析LONG_TEXT的层级结构"""
+            if not longtext:
+                return ("", "")
+                
             # 处理最常见的格式：一级分类 - [二级分类 / 三级分类]
-            
+
             # 1. 简单单级分类（如：月報表、展示文件）
             if ' - [' not in longtext and '/' not in longtext:
-                return (longtext, "", "")
-            
+                return (longtext, "")
+
             # 2. 带中括号的分类（如：公告及通告 - [董事名單和他們的地位和作用]）
             if ' - [' in longtext and ']' in longtext:
                 parts = longtext.split(' - [', 1)
                 level1 = parts[0].strip()
                 remaining = parts[1].rstrip(']')
-                
+
                 # 检查是否有斜杠分隔的子分类
                 if ' / ' in remaining:
                     sub_parts = remaining.split(' / ')
                     level2 = sub_parts[0].strip()
                     level3 = ' / '.join(sub_parts[1:]).strip()
-                    return (level1, level2, level3)
+                    return (level1, f"{level2}/{level3}")
                 else:
-                    return (level1, remaining.strip(), "")
-            
+                    return (level1, remaining.strip())
+
             # 3. 直接斜杠分隔（如：財務報表/環境、社會及管治資料）
             if '/' in longtext:
                 parts = longtext.split('/', 1)
                 level1 = parts[0].strip()
                 level2 = parts[1].strip()
-                return (level1, level2, "")
-            
+                return (level1, level2)
+
             # 4. 默认情况
-            return (longtext, "", "")
-        
-        # 解析目录结构
-        level1, level2, level3 = parse_longtext_structure(main_category)
-        
-        # 清理各级目录名称
-        clean_level1 = clean_path_name(level1)
-        clean_level2 = clean_path_name(level2) if level2 else ""
-        clean_level3 = clean_path_name(level3) if level3 else ""
-        
-        # 构建目录路径
-        path_parts = [clean_level1]
-        if clean_level2:
-            path_parts.append(clean_level2)
-        if clean_level3:
-            path_parts.append(clean_level3)
-        
-        return os.path.join(*path_parts)
+            return (longtext, "")
+
+        # 如果有关键字分类，使用关键字分类作为主目录
+        if keyword_category:
+            # 关键字分类/原主分类/子分类
+            parsed_main, parsed_sub = parse_longtext_structure(main_category)
+            
+            clean_keyword = clean_path_name(keyword_category)
+            clean_main = clean_path_name(parsed_main)
+            clean_sub = clean_path_name(parsed_sub)
+            
+            path_parts = [clean_keyword]
+            if clean_main:
+                path_parts.append(clean_main)
+            if clean_sub:
+                path_parts.append(clean_sub)
+                
+            return os.path.join(*path_parts)
+        else:
+            # 没有关键字分类，使用原有的分类结构
+            parsed_main, parsed_sub = parse_longtext_structure(main_category)
+            
+            clean_main = clean_path_name(parsed_main)
+            clean_sub = clean_path_name(parsed_sub)
+            
+            path_parts = [clean_main] if clean_main else ["其他"]
+            if clean_sub:
+                path_parts.append(clean_sub)
+                
+            return os.path.join(*path_parts)
 
     def get_classification_stats(self, announcements: List[Dict]) -> Dict[str, int]:
         """
@@ -417,8 +495,13 @@ class AnnouncementClassifier:
         stats = {}
 
         for ann in announcements:
-            main_cat, sub_cat, confidence = self.classify_announcement_enhanced(ann)
-            full_category = f"{main_cat}/{sub_cat}"
+            keyword_cat, main_cat, sub_cat, confidence = self.classify_announcement_enhanced(ann)
+            
+            if keyword_cat:
+                full_category = f"{keyword_cat}/{main_cat}/{sub_cat}"
+            else:
+                full_category = f"{main_cat}/{sub_cat}"
+                
             stats[full_category] = stats.get(full_category, 0) + 1
 
         return stats
@@ -435,20 +518,22 @@ class AnnouncementFilter:
             config: 配置字典
         """
         self.excluded_categories = config.get('announcement_categories', {}).get('excluded_categories', [])
-        
-    def should_exclude(self, main_category: str, sub_category: str = None) -> bool:
+
+    def should_exclude(self, keyword_category: str, main_category: str, sub_category: str = None) -> bool:
         """
         检查是否应该排除该分类的公告
         
         Args:
+            keyword_category: 关键字分类
             main_category: 主分类（通常是LONG_TEXT）
             sub_category: 子分类（可选）
             
         Returns:
             bool: True表示应该排除，False表示保留
         """
+        # 检查主分类是否在排除列表中
         return main_category in self.excluded_categories
-        
+
     def filter_announcements(self, announcements: List[Dict], classifier) -> Tuple[List[Dict], List[Dict]]:
         """
         过滤公告列表
@@ -462,14 +547,14 @@ class AnnouncementFilter:
         """
         included = []
         excluded = []
-        
+
         for ann in announcements:
-            main_cat, sub_cat, confidence = classifier.classify_announcement_enhanced(ann)
-            if self.should_exclude(main_cat, sub_cat):
+            keyword_cat, main_cat, sub_cat, confidence = classifier.classify_announcement_enhanced(ann)
+            if self.should_exclude(keyword_cat, main_cat, sub_cat):
                 excluded.append(ann)
             else:
                 included.append(ann)
-                
+
         return included, excluded
 
 
@@ -491,7 +576,7 @@ class ConfigManager:
 
             # 处理环境变量替换
             self._replace_env_variables(config)
-            
+
             # 验证配置文件结构
             self.validate_config(config)
             return config
@@ -504,7 +589,7 @@ class ConfigManager:
     def _replace_env_variables(self, config: Any) -> None:
         """递归替换配置中的环境变量"""
         import re
-        
+
         if isinstance(config, dict):
             for key, value in config.items():
                 if isinstance(value, str):
@@ -527,7 +612,7 @@ class ConfigManager:
             for item in config:
                 if isinstance(item, (dict, list)):
                     self._replace_env_variables(item)
-    
+
     def get_default_config(self) -> Dict[str, Any]:
         """获取默认配置"""
         return {'settings': {'save_path': os.path.join(os.path.expanduser("~"), "Desktop"), 'filename_length': 220,
@@ -630,9 +715,9 @@ class HKEXDownloader:
         stock_search = api_config.get('stock_search', '/search/prefix.do')
         market = api_config.get('market', 'SEHK')
         callback = api_config.get('callback_param', 'callback')
-        
+
         logging.info(f"开始获取股票ID - 股票代码: {stockcode}")
-        
+
         for attempt in range(self.retry_attempts):
             try:
                 url = f'{base_url}{stock_search}?&callback={callback}&lang=ZH&type=A&name={stockcode}&market={market}&_=1653821865437'
@@ -701,9 +786,8 @@ class HKEXDownloader:
                        "accept": "text/html, */*; q=0.01",
                        "sec-ch-ua": "\"Not)A;Brand\";v=\"8\", \"Chromium\";v=\"138\", \"Google Chrome\";v=\"138\"",
                        "sec-ch-ua-mobile": "?0", "sec-fetch-site": "same-origin", "sec-fetch-mode": "cors",
-                       "sec-fetch-dest": "empty",
-                       "referer": referer,
-                       "accept-encoding": "gzip, deflate, br, zstd", "accept-language": "zh-CN,zh;q=0.9",
+                       "sec-fetch-dest": "empty", "referer": referer, "accept-encoding": "gzip, deflate, br, zstd",
+                       "accept-language": "zh-CN,zh;q=0.9",
                        # "cookie": "TS38b16b21027=086f2721efab2000642dbe64e6deea82232cbbc6623ec72c04dbb365e5fabaffc676ede33e5ea917086e538f3c113000ddf73ed4c79657e7aa42a671f5d22a7baf96133d9aa7f533998a6e8a9ff9aa432321b18be489d59c7c54e761b51a3c42",
                        "priority": "u=0, i"}
 
@@ -725,7 +809,8 @@ class HKEXDownloader:
                 data_json = json.loads(data)
                 logging.info(f"API响应数据: {data_json}")
                 if not data_json or 'result' not in data_json or not data_json['result']:
-                    logging.warning(f"未找到符合条件的公告 - 股票: {stockcode}, 日期: {start_date_str} 到 {end_date_str}")
+                    logging.warning(
+                        f"未找到符合条件的公告 - 股票: {stockcode}, 日期: {start_date_str} 到 {end_date_str}")
                     return [], stock_name
 
                 announcements = []
@@ -748,26 +833,16 @@ class HKEXDownloader:
                         formatted_date = date_object.strftime("%Y-%m-%d")
 
                         # 在搜索时就进行分类，利用更多上下文信息
-                        announcement_data = {
-                            'date': formatted_date, 
-                            'title': title, 
-                            'link': pdf_link,
-                            'stock_code': stockcode,
-                            'stock_name': stock_name,
-                            # 原始港交所数据，用于增强分类
-                            'raw_data': item
-                        }
+                        announcement_data = {'date': formatted_date, 'title': title, 'link': pdf_link,
+                            'stock_code': stockcode, 'stock_name': stock_name, # 原始港交所数据，用于增强分类
+                            'raw_data': item}
 
                         # 进行增强分类
                         if hasattr(self, 'classifier') and self.classifier.enabled:
-                            main_category, sub_category, confidence = self.classifier.classify_announcement_enhanced(
-                                announcement_data
-                            )
-                            announcement_data.update({
-                                'main_category': main_category,
-                                'sub_category': sub_category,
-                                'classification_confidence': confidence
-                            })
+                            keyword_category, main_category, sub_category, confidence = self.classifier.classify_announcement_enhanced(
+                                announcement_data)
+                            announcement_data.update({'keyword_category': keyword_category, 'main_category': main_category, 'sub_category': sub_category,
+                                'classification_confidence': confidence})
 
                         announcements.append(announcement_data)
 
@@ -987,21 +1062,23 @@ class HKEXDownloader:
                 # 使用搜索时已经进行的分类，或进行新的分类
                 if self.classifier.enabled:
                     # 优先使用搜索时的分类结果
-                    if 'main_category' in ann and 'sub_category' in ann:
+                    if 'keyword_category' in ann and 'main_category' in ann and 'sub_category' in ann:
+                        keyword_category = ann['keyword_category']
                         main_category = ann['main_category']
                         sub_category = ann['sub_category']
                         confidence = ann.get('classification_confidence', 0.7)
-                        
+
                         # 如果置信度较低，重新分类
                         if confidence < 0.8:
-                            enhanced_main, enhanced_sub, new_confidence = self.classifier.classify_announcement_enhanced(ann)
+                            enhanced_keyword, enhanced_main, enhanced_sub, new_confidence = self.classifier.classify_announcement_enhanced(
+                                ann)
                             if new_confidence > confidence:
-                                main_category, sub_category = enhanced_main, enhanced_sub
+                                keyword_category, main_category, sub_category = enhanced_keyword, enhanced_main, enhanced_sub
                     else:
                         # 兜底：使用增强分类（基于LONG_TEXT）
-                        main_category, sub_category, confidence = self.classifier.classify_announcement_enhanced(ann)
-                    
-                    category_path = self.classifier.get_folder_path(main_category, sub_category)
+                        keyword_category, main_category, sub_category, confidence = self.classifier.classify_announcement_enhanced(ann)
+
+                    category_path = self.classifier.get_folder_path(keyword_category, main_category, sub_category)
                     savepath = os.path.join(base_path, category_path)
                 else:
                     savepath = base_path
@@ -1035,25 +1112,26 @@ class HKEXDownloader:
                     # 检查文件大小
                     content_size = len(response.content)
                     if content_size < 5120:  # 小于5KB的文件可能有问题
-                        logging.warning(f"⚠️  文件大小异常: {os.path.basename(filepath)} ({content_size}字节) - 可能下载失败或为错误页面")
+                        logging.warning(
+                            f"⚠️  文件大小异常: {os.path.basename(filepath)} ({content_size}字节) - 可能下载失败或为错误页面")
                         # 检查内容是否为HTML错误页面
                         content_text = response.content.decode('utf-8', errors='ignore').lower()
                         if '<html' in content_text or 'error' in content_text or '404' in content_text:
                             logging.error(f"❌ 下载到错误页面: {ann['title']} - 跳过保存")
                             continue
-                    
+
                     with open(filepath, 'wb') as f:
                         f.write(response.content)
                     download_count += 1
-                    
+
                     # 显示文件大小信息
                     if content_size >= 1024 * 1024:  # >= 1MB
-                        size_info = f"({content_size/(1024*1024):.2f}MB)"
+                        size_info = f"({content_size / (1024 * 1024):.2f}MB)"
                     elif content_size >= 1024:  # >= 1KB
-                        size_info = f"({content_size/1024:.1f}KB)"
+                        size_info = f"({content_size / 1024:.1f}KB)"
                     else:
                         size_info = f"({content_size}字节)"
-                    
+
                     logging.info(f"✓ 成功下载: {os.path.basename(filepath)} {size_info}")
                 else:
                     logging.warning(f"下载失败 (HTTP {response.status_code}): {ann['title']}")
@@ -1531,9 +1609,14 @@ class HKEXDownloaderCLI:
             print("🚀 使用异步模式下载...")
             try:
                 from async_downloader import run_async_download
-                save_path, count = run_async_download(config_manager, task)
+                save_path, count, skipped = run_async_download(config_manager, task)
                 if count > 0:
-                    print(f"\n✓ 异步下载完成！成功下载 {count} 个文件到 {save_path}")
+                    if skipped > 0:
+                        print(f"\n✓ 异步下载完成！成功下载 {count} 个新文件，跳过 {skipped} 个已存在文件到 {save_path}")
+                    else:
+                        print(f"\n✓ 异步下载完成！成功下载 {count} 个文件到 {save_path}")
+                elif skipped > 0:
+                    print(f"\n⚠ 找到 {skipped} 个公告，但文件已存在，无需重新下载")
                 else:
                     print("\n⚠ 未找到符合条件的公告")
             except ImportError:
@@ -1637,9 +1720,14 @@ class HKEXDownloaderCLI:
             try:
                 from async_downloader import run_async_download
                 print(f"🚀 使用异步模式执行任务: {task_name}")
-                save_path, count = run_async_download(config_manager, target_task)
+                save_path, count, skipped = run_async_download(config_manager, target_task)
                 if count > 0:
-                    print(f"\n✓ 任务完成！成功下载 {count} 个文件到 {save_path}")
+                    if skipped > 0:
+                        print(f"\n✓ 任务完成！成功下载 {count} 个新文件，跳过 {skipped} 个已存在文件到 {save_path}")
+                    else:
+                        print(f"\n✓ 任务完成！成功下载 {count} 个文件到 {save_path}")
+                elif skipped > 0:
+                    print(f"\n⚠ 找到 {skipped} 个公告，但文件已存在，无需重新下载")
                 else:
                     print("\n⚠ 未找到符合条件的公告")
             except ImportError:
@@ -1693,9 +1781,14 @@ class HKEXDownloaderCLI:
             try:
                 from async_downloader import run_async_download
                 print("🚀 使用异步模式从数据库获取股票列表并下载...")
-                save_path, count = run_async_download(config_manager, task)
+                save_path, count, skipped = run_async_download(config_manager, task)
                 if count > 0:
-                    print(f"\n✓ 数据库任务完成！成功下载 {count} 个文件到 {save_path}")
+                    if skipped > 0:
+                        print(f"\n✓ 数据库任务完成！成功下载 {count} 个新文件，跳过 {skipped} 个已存在文件到 {save_path}")
+                    else:
+                        print(f"\n✓ 数据库任务完成！成功下载 {count} 个文件到 {save_path}")
+                elif skipped > 0:
+                    print(f"\n⚠ 找到 {skipped} 个公告，但文件已存在，无需重新下载")
                 else:
                     print("\n⚠ 未找到符合条件的公告")
             except ImportError:

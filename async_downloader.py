@@ -159,8 +159,12 @@ class AsyncHKEXDownloader(HKEXDownloader):
     async def _ensure_session(self):
         """确保会话已创建"""
         if self._session is None:
-            # 创建连接器，限制连接数
-            connector = aiohttp.TCPConnector(limit=self.max_concurrent * 2, limit_per_host=self.max_concurrent)
+            # 创建连接器，限制连接数，并禁用SSL验证以解决证书问题
+            connector = aiohttp.TCPConnector(
+                limit=self.max_concurrent * 2, 
+                limit_per_host=self.max_concurrent,
+                ssl=False  # 禁用SSL验证
+            )
 
             # 创建会话
             timeout = aiohttp.ClientTimeout(total=self.async_timeout)
@@ -283,7 +287,7 @@ class AsyncHKEXDownloader(HKEXDownloader):
             if excluded_announcements:
                 excluded_categories = set()
                 for ann in excluded_announcements:
-                    main_cat, _, _ = self.classifier.classify_announcement_enhanced(ann)
+                    _, main_cat, _, _ = self.classifier.classify_announcement_enhanced(ann)
                     excluded_categories.add(main_cat)
                 self.logger.info(f"过滤排除了 {len(excluded_announcements)} 个公告，分类：{', '.join(excluded_categories)}")
         
@@ -292,8 +296,8 @@ class AsyncHKEXDownloader(HKEXDownloader):
         for ann in announcements:
             # 使用分类器确定文件保存路径
             if self.classifier.enabled:
-                main_category, sub_category, confidence = self.classifier.classify_announcement_enhanced(ann)
-                category_path = self.classifier.get_folder_path(main_category, sub_category)
+                keyword_category, main_category, sub_category, confidence = self.classifier.classify_announcement_enhanced(ann)
+                category_path = self.classifier.get_folder_path(keyword_category, main_category, sub_category)
                 savepath = os.path.join(base_path, category_path)
             else:
                 savepath = base_path
