@@ -287,7 +287,7 @@ class AsyncHKEXDownloader(HKEXDownloader):
             if excluded_announcements:
                 excluded_categories = set()
                 for ann in excluded_announcements:
-                    _, main_cat, _, _ = self.classifier.classify_announcement_enhanced(ann)
+                    _, _, main_cat, _, _ = self.classifier.classify_announcement_enhanced(ann)
                     excluded_categories.add(main_cat)
                 self.logger.info(f"过滤排除了 {len(excluded_announcements)} 个公告，分类：{', '.join(excluded_categories)}")
         
@@ -296,8 +296,8 @@ class AsyncHKEXDownloader(HKEXDownloader):
         for ann in announcements:
             # 使用分类器确定文件保存路径
             if self.classifier.enabled:
-                keyword_category, main_category, sub_category, confidence = self.classifier.classify_announcement_enhanced(ann)
-                category_path = self.classifier.get_folder_path(keyword_category, main_category, sub_category)
+                keyword_category, all_keywords, main_category, sub_category, confidence = self.classifier.classify_announcement_enhanced(ann)
+                category_path = self.classifier.get_folder_path(keyword_category, all_keywords, main_category, sub_category)
                 savepath = os.path.join(base_path, category_path)
             else:
                 savepath = base_path

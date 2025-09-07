@@ -286,61 +286,96 @@ class AnnouncementClassifier:
 
         return variants
 
-    def _match_keyword_category(self, title: str) -> Tuple[str, float]:
+    def _match_keyword_category(self, title: str) -> Tuple[str, str, float]:
         """
-        根据公告标题匹配关键字分类
+        根据公告标题匹配关键字分类，支持多关键字检测
         
         Args:
             title: 公告标题
             
         Returns:
-            Tuple[str, float]: (关键字分类名称, 匹配置信度)
+            Tuple[str, str, float]: (主要关键字分类, 所有匹配关键字, 最高置信度)
         """
         if not self.keyword_config or not title:
-            return "", 0.0
+            return "", "", 0.0
         
         # 将标题转换为繁简体版本进行匹配
         title_variants = self._convert_text(title.lower())
+        
+        matched_keywords = []  # 存储所有匹配的关键字信息
         
         for category_key, category_config in self.keyword_config.items():
             if not isinstance(category_config, dict):
                 continue
                 
-            # 获取中英文关键字列表
+            # 获取关键字信息
             chinese_keywords = category_config.get('chinese', [])
             english_keywords = category_config.get('english', [])
             folder_name = category_config.get('folder_name', category_key)
+            priority = category_config.get('priority', 50)  # 默认优先级50
+            weight = category_config.get('weight', 0.5)     # 默认权重0.5
             
             # 检查中文关键字匹配
             for keyword in chinese_keywords:
                 for title_variant in title_variants:
                     if keyword.lower() in title_variant:
-                        return folder_name, 0.9
+                        matched_keywords.append({
+                            'folder_name': folder_name,
+                            'keyword': keyword,
+                            'priority': priority,
+                            'weight': weight,
+                            'confidence': 0.9
+                        })
+                        break  # 找到匹配就跳出内层循环
             
             # 检查英文关键字匹配
             for keyword in english_keywords:
                 for title_variant in title_variants:
                     if keyword.lower() in title_variant:
-                        return folder_name, 0.9
+                        matched_keywords.append({
+                            'folder_name': folder_name,
+                            'keyword': keyword,
+                            'priority': priority,
+                            'weight': weight,
+                            'confidence': 0.9
+                        })
+                        break  # 找到匹配就跳出内层循环
         
-        return "", 0.0
+        if not matched_keywords:
+            return "", "", 0.0
+        
+        # 按优先级和权重排序，选择最佳匹配
+        matched_keywords.sort(key=lambda x: (x['priority'], x['weight']), reverse=True)
+        
+        # 主要分类使用最高优先级的关键字
+        primary_match = matched_keywords[0]
+        primary_category = primary_match['folder_name']
+        
+        # 生成所有匹配关键字的描述
+        all_keywords = [match['folder_name'] for match in matched_keywords]
+        all_keywords_str = "+".join(sorted(set(all_keywords), key=all_keywords.index))  # 去重但保持顺序
+        
+        # 计算综合置信度
+        max_confidence = max(match['confidence'] * match['weight'] for match in matched_keywords)
+        
+        return primary_category, all_keywords_str, max_confidence
 
-    def classify_announcement_enhanced(self, announcement_data: Dict[str, Any]) -> Tuple[str, str, str, float]:
+    def classify_announcement_enhanced(self, announcement_data: Dict[str, Any]) -> Tuple[str, str, str, str, float]:
         """
-        增强分类：关键字分类 + LONG_TEXT分类
+        增强分类：关键字分类 + LONG_TEXT分类，支持多关键字检测
         
         Args:
             announcement_data: 包含标题、日期、股票信息、原始数据等的字典
             
         Returns:
-            Tuple[str, str, str, float]: (关键字分类, 主分类, 子分类, 置信度)
+            Tuple[str, str, str, str, float]: (关键字分类, 所有匹配关键字, 主分类, 子分类, 置信度)
         """
         title = announcement_data.get('title', '')
         raw_data = announcement_data.get('raw_data', {})
         long_text = raw_data.get('LONG_TEXT', '')
 
-        # 第一步：关键字分类匹配
-        keyword_category, keyword_confidence = self._match_keyword_category(title)
+        # 第一步：多关键字分类匹配
+        keyword_category, all_keywords, keyword_confidence = self._match_keyword_category(title)
         
         # 第二步：LONG_TEXT分类
         main_category = ""
@@ -367,7 +402,7 @@ class AnnouncementClassifier:
         else:
             total_confidence = longtext_confidence
 
-        return keyword_category, main_category, sub_category, total_confidence
+        return keyword_category, all_keywords, main_category, sub_category, total_confidence
 
     def _clean_long_text(self, long_text: str) -> str:
         """清理LONG_TEXT中的乱码字符和HTML转义"""
@@ -390,12 +425,13 @@ class AnnouncementClassifier:
 
         return text
 
-    def get_folder_path(self, keyword_category: str, main_category: str, sub_category: str) -> str:
+    def get_folder_path(self, keyword_category: str, all_keywords: str, main_category: str, sub_category: str) -> str:
         """
-        获取分类对应的文件夹路径，支持关键字分类的三级目录结构
+        获取分类对应的文件夹路径，支持多关键字分类的目录结构
         
         Args:
-            keyword_category: 关键字分类（如：回购、供股等）
+            keyword_category: 主要关键字分类（如：合股、供股等）
+            all_keywords: 所有匹配的关键字（如：合股+供股）
             main_category: 主分类 (清理后的LONG_TEXT)
             sub_category: 子分类 (清理后的LONG_TEXT)
 
@@ -455,10 +491,18 @@ class AnnouncementClassifier:
 
         # 如果有关键字分类，使用关键字分类作为主目录
         if keyword_category:
+            # 决定使用单一关键字还是复合关键字作为文件夹名
+            if all_keywords and "+" in all_keywords:
+                # 复合分类：使用主要关键字作为主文件夹，但在文件夹名中体现复合性质
+                folder_display_name = f"{keyword_category}[{all_keywords}]"
+            else:
+                # 单一分类：直接使用关键字分类
+                folder_display_name = keyword_category
+            
             # 关键字分类/原主分类/子分类
             parsed_main, parsed_sub = parse_longtext_structure(main_category)
             
-            clean_keyword = clean_path_name(keyword_category)
+            clean_keyword = clean_path_name(folder_display_name)
             clean_main = clean_path_name(parsed_main)
             clean_sub = clean_path_name(parsed_sub)
             
@@ -495,10 +539,12 @@ class AnnouncementClassifier:
         stats = {}
 
         for ann in announcements:
-            keyword_cat, main_cat, sub_cat, confidence = self.classify_announcement_enhanced(ann)
+            keyword_cat, all_keywords, main_cat, sub_cat, confidence = self.classify_announcement_enhanced(ann)
             
             if keyword_cat:
-                full_category = f"{keyword_cat}/{main_cat}/{sub_cat}"
+                # 显示所有匹配的关键字信息
+                display_keyword = all_keywords if all_keywords and "+" in all_keywords else keyword_cat
+                full_category = f"{display_keyword}/{main_cat}/{sub_cat}"
             else:
                 full_category = f"{main_cat}/{sub_cat}"
                 
@@ -549,7 +595,7 @@ class AnnouncementFilter:
         excluded = []
 
         for ann in announcements:
-            keyword_cat, main_cat, sub_cat, confidence = classifier.classify_announcement_enhanced(ann)
+            keyword_cat, all_keywords, main_cat, sub_cat, confidence = classifier.classify_announcement_enhanced(ann)
             if self.should_exclude(keyword_cat, main_cat, sub_cat):
                 excluded.append(ann)
             else:
@@ -839,9 +885,10 @@ class HKEXDownloader:
 
                         # 进行增强分类
                         if hasattr(self, 'classifier') and self.classifier.enabled:
-                            keyword_category, main_category, sub_category, confidence = self.classifier.classify_announcement_enhanced(
+                            keyword_category, all_keywords, main_category, sub_category, confidence = self.classifier.classify_announcement_enhanced(
                                 announcement_data)
-                            announcement_data.update({'keyword_category': keyword_category, 'main_category': main_category, 'sub_category': sub_category,
+                            announcement_data.update({'keyword_category': keyword_category, 'all_keywords': all_keywords, 
+                                'main_category': main_category, 'sub_category': sub_category,
                                 'classification_confidence': confidence})
 
                         announcements.append(announcement_data)
@@ -1062,23 +1109,24 @@ class HKEXDownloader:
                 # 使用搜索时已经进行的分类，或进行新的分类
                 if self.classifier.enabled:
                     # 优先使用搜索时的分类结果
-                    if 'keyword_category' in ann and 'main_category' in ann and 'sub_category' in ann:
+                    if 'keyword_category' in ann and 'all_keywords' in ann and 'main_category' in ann and 'sub_category' in ann:
                         keyword_category = ann['keyword_category']
+                        all_keywords = ann['all_keywords']
                         main_category = ann['main_category']
                         sub_category = ann['sub_category']
                         confidence = ann.get('classification_confidence', 0.7)
 
                         # 如果置信度较低，重新分类
                         if confidence < 0.8:
-                            enhanced_keyword, enhanced_main, enhanced_sub, new_confidence = self.classifier.classify_announcement_enhanced(
+                            enhanced_keyword, enhanced_all_keywords, enhanced_main, enhanced_sub, new_confidence = self.classifier.classify_announcement_enhanced(
                                 ann)
                             if new_confidence > confidence:
-                                keyword_category, main_category, sub_category = enhanced_keyword, enhanced_main, enhanced_sub
+                                keyword_category, all_keywords, main_category, sub_category = enhanced_keyword, enhanced_all_keywords, enhanced_main, enhanced_sub
                     else:
                         # 兜底：使用增强分类（基于LONG_TEXT）
-                        keyword_category, main_category, sub_category, confidence = self.classifier.classify_announcement_enhanced(ann)
+                        keyword_category, all_keywords, main_category, sub_category, confidence = self.classifier.classify_announcement_enhanced(ann)
 
-                    category_path = self.classifier.get_folder_path(keyword_category, main_category, sub_category)
+                    category_path = self.classifier.get_folder_path(keyword_category, all_keywords, main_category, sub_category)
                     savepath = os.path.join(base_path, category_path)
                 else:
                     savepath = base_path

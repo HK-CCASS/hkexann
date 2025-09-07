@@ -39,7 +39,7 @@ download_tasks:
     enabled: false  # 启用用于测试
 
   - name: "批量股票下载任务"
-    stock_code: [ '00200','00339']
+    stock_code: [ '02699']
     start_date: "2024-01-01"
     end_date: "today"
     keywords: []
@@ -61,50 +61,72 @@ download_tasks:
 # 常用搜索关键字预设 - 用于主分类识别
 common_keywords:
   # 关键字分类配置 - 用作主分类
-  share_buyback: 
-    chinese: ["回購", "股份回購", "購回股份", "購回"]
-    english: ["Share Buyback", "Buyback", "Share Repurchase", "Repurchase"]
-    folder_name: "回购"
-  
-  convertible_bonds:
-    chinese: ["可转换", "可轉換", "轉換債券", "可換股債券"]
-    english: ["Convertible Bonds", "Convertible", "Convertible Securities"]
-    folder_name: "可转换"
+  # 高优先级事件（特殊企业行为）
+  ipo:
+    chinese: ["首次公開發售", "首次公开发行", "新股上市", "IPO"]
+    english: ["Initial Public Offering", "IPO", "Public Offering"]
+    folder_name: "IPO"
+    priority: 90  # 最高优先级
+    weight: 1.0
+    
+  privatization:
+    chinese: ["私有化", "除牌", "退市"]
+    english: ["Privatization", "Going Private", "Delisting"]
+    folder_name: "私有化"
+    priority: 85
+    weight: 1.0
+
+  full_buyout:
+    chinese: ["全購", "全面收購", "強制性收購"]
+    english: ["Full Buyout", "Mandatory Offer", "General Offer"]
+    folder_name: "全购"
+    priority: 80
+    weight: 1.0
+
+  # 中高优先级事件（股本变动）
+  reverse_stock_split:
+    chinese: ["合股", "股份合併", "股票合併", "資本重組"]
+    english: ["Reverse Stock Split", "Share Consolidation", "Stock Consolidation", "Capital Reorganization"]
+    folder_name: "合股"
+    priority: 75
+    weight: 0.9
   
   stock_split:
     chinese: ["拆股", "股份分拆", "股票分割"]
     english: ["Stock Split", "Share Split", "Stock Subdivision"]
     folder_name: "拆股"
-  
-  reverse_stock_split:
-    chinese: ["合股", "股份合併", "股票合併"]
-    english: ["Reverse Stock Split", "Share Consolidation", "Stock Consolidation"]
-    folder_name: "合股"
-  
-  ipo:
-    chinese: ["首次公開發售", "首次公开发行", "新股上市", "IPO"]
-    english: ["Initial Public Offering", "IPO", "Public Offering"]
-    folder_name: "IPO"
-  
-  privatization:
-    chinese: ["私有化", "除牌", "退市"]
-    english: ["Privatization", "Going Private", "Delisting"]
-    folder_name: "私有化"
-  
-  full_buyout:
-    chinese: ["全購", "全面收購", "強制性收購"]
-    english: ["Full Buyout", "Mandatory Offer", "General Offer"]
-    folder_name: "全购"
-  
-  placing:
-    chinese: ["配股", "配售", "股份配售"]
-    english: ["Placing", "Share Placing", "Equity Placing"]
-    folder_name: "配股"
-  
+    priority: 70
+    weight: 0.9
+
+  # 中等优先级事件（融资活动）
   rights_issue:
     chinese: ["供股", "權利股", "認股權"]
     english: ["Rights Issue", "Rights Offering", "Rights"]
     folder_name: "供股"
+    priority: 60
+    weight: 0.8
+
+  placing:
+    chinese: ["配股", "配售", "股份配售"]
+    english: ["Placing", "Share Placing", "Equity Placing"]
+    folder_name: "配股"
+    priority: 55
+    weight: 0.8
+
+  convertible_bonds:
+    chinese: ["可转换", "可轉換", "轉換債券", "可換股債券"]
+    english: ["Convertible Bonds", "Convertible", "Convertible Securities"]
+    folder_name: "可转换"
+    priority: 50
+    weight: 0.7
+
+  # 较低优先级事件（股份操作）
+  share_buyback: 
+    chinese: ["回購", "股份回購", "購回股份", "購回"]
+    english: ["Share Buyback", "Buyback", "Share Repurchase", "Repurchase"]
+    folder_name: "回购"
+    priority: 40
+    weight: 0.6
 
 # 公告分类配置（现已改为纯净LONG_TEXT分类）
 # 说明：系统现在直接使用港交所官方LONG_TEXT作为分类结果，不进行任何映射
