@@ -59,10 +59,20 @@ class ClickHousePDFStorage:
             auth = aiohttp.BasicAuth(self.username, self.password)
             timeout = aiohttp.ClientTimeout(total=30)
             
+            # 优化连接池配置，防止连接耗尽
+            connector = aiohttp.TCPConnector(
+                limit=100,           # 总连接数限制
+                limit_per_host=20,   # 单主机连接数限制，防止ClickHouse连接过多
+                ttl_dns_cache=300,   # DNS缓存5分钟
+                use_dns_cache=True,  # 启用DNS缓存
+                enable_cleanup_closed=True,  # 启用已关闭连接清理
+                keepalive_timeout=60  # 连接保活60秒
+            )
+            
             self.session = aiohttp.ClientSession(
                 auth=auth,
                 timeout=timeout,
-                connector=aiohttp.TCPConnector(limit=100)
+                connector=connector
             )
             
             # 测试连接
@@ -81,47 +91,77 @@ class ClickHousePDFStorage:
                 self.session = None
             return False
     
-    async def _execute_query(self, query: str, params: Optional[Dict] = None) -> List[List[str]]:
-        """执行ClickHouse查询"""
+    async def _execute_query(self, query: str, params: Optional[Dict] = None, max_retries: int = 3) -> List[List[str]]:
+        """执行ClickHouse查询，带重试机制"""
+        # 如果会话未初始化，先尝试初始化
         if not self.session:
-            raise RuntimeError("ClickHouse会话未初始化")
+            logger.info("ClickHouse会话未初始化，正在初始化...")
+            await self.initialize()
         
-        try:
-            # ClickHouse HTTP接口：查询作为POST body，参数作为URL参数
-            url_params = {
-                'database': self.database,
-                'default_format': 'JSONEachRow'
-            }
-            
-            if params:
-                url_params.update(params)
-            
-            # 查询作为POST body发送
-            async with self.session.post(
-                f"{self.base_url}/", 
-                params=url_params,
-                data=query,
-                headers={'Content-Type': 'text/plain'}
-            ) as response:
-                if response.status != 200:
-                    error_text = await response.text()
-                    raise Exception(f"ClickHouse查询失败 (HTTP {response.status}): {error_text}")
+        # 构建URL参数
+        url_params = {
+            'database': self.database,
+            'default_format': 'JSONEachRow'
+        }
+        
+        if params:
+            url_params.update(params)
+        
+        # 带重试的查询执行
+        last_exception = None
+        for attempt in range(max_retries):
+            try:
+                # 查询作为POST body发送
+                async with self.session.post(
+                    f"{self.base_url}/", 
+                    params=url_params,
+                    data=query,
+                    headers={'Content-Type': 'text/plain'}
+                ) as response:
+                    if response.status != 200:
+                        error_text = await response.text()
+                        raise Exception(f"ClickHouse查询失败 (HTTP {response.status}): {error_text}")
+                    
+                    result_text = await response.text()
+                    
+                    # 解析JSON响应
+                    results = []
+                    if result_text.strip():
+                        for line in result_text.strip().split('\n'):
+                            if line.strip():
+                                row_data = json.loads(line)
+                                results.append(list(row_data.values()))
+                    
+                    return results
+                    
+            except (aiohttp.ClientError, aiohttp.ServerDisconnectedError, OSError) as e:
+                last_exception = e
+                logger.warning(f"ClickHouse查询连接异常 (尝试 {attempt + 1}/{max_retries}): {e}")
                 
-                result_text = await response.text()
-                
-                # 解析JSON响应
-                results = []
-                if result_text.strip():
-                    for line in result_text.strip().split('\n'):
-                        if line.strip():
-                            row_data = json.loads(line)
-                            results.append(list(row_data.values()))
-                
-                return results
-                
-        except Exception as e:
-            logger.error(f"ClickHouse查询执行失败: {e}")
-            raise
+                # 连接异常时重新初始化会话
+                if attempt < max_retries - 1:
+                    try:
+                        if self.session and not self.session.closed:
+                            await self.session.close()
+                        self.session = None
+                        
+                        # 短暂延迟后重新初始化
+                        await asyncio.sleep(0.5 * (attempt + 1))
+                        await self.initialize()
+                        
+                    except Exception as init_error:
+                        logger.error(f"重新初始化失败: {init_error}")
+                        
+            except Exception as e:
+                logger.error(f"ClickHouse查询执行失败: {e}")
+                raise
+        
+        # 所有重试都失败
+        if last_exception:
+            logger.error(f"ClickHouse查询在{max_retries}次重试后失败: {last_exception}")
+            raise last_exception
+        else:
+            raise RuntimeError(f"ClickHouse查询在{max_retries}次重试后失败")
     
     async def _ensure_tables_exist(self):
         """确保PDF相关表存在"""
@@ -223,8 +263,8 @@ class ClickHousePDFStorage:
             elif not isinstance(published_date, datetime):
                 published_date = datetime.now()
             
-            # 转换为字符串避免序列化问题
-            published_date_str = published_date.strftime('%Y-%m-%d %H:%M:%S')
+            # 转换为日期字符串避免序列化问题（匹配Date类型）
+            published_date_str = published_date.strftime('%Y-%m-%d')
             
             query = """
             INSERT INTO pdf_documents 
@@ -259,12 +299,11 @@ class ClickHousePDFStorage:
             query = f"""
             ALTER TABLE pdf_documents UPDATE 
                 processing_status = '{status}',
-                chunk_count = {chunk_count},
-                vector_count = {vector_count},
-                processing_time_seconds = {processing_time},
+                chunks_count = {chunk_count},
+                vectors_count = {vector_count},
                 error_message = '{error_message}',
                 updated_at = now()
-            WHERE id = '{doc_id}'
+            WHERE doc_id = '{doc_id}'
             """
             
             await self._execute_query(query)
@@ -288,7 +327,7 @@ class ClickHousePDFStorage:
             query = """
             INSERT INTO pdf_chunks 
             (chunk_id, doc_id, chunk_index, page_number, text, text_length, 
-             text_hash, chunk_type)
+             text_hash, chunk_type, vector_status)
             VALUES
             """
             
@@ -310,7 +349,7 @@ class ClickHousePDFStorage:
                 chunk_type_num = type_mapping.get(chunk_type, 5)
                 
                 values = f"('{chunk_id}', '{doc_id}', {chunk_index}, {page_number}, " \
-                        f"'{content[:1000]}', {text_length}, '{text_hash}', {chunk_type_num})"
+                        f"'{content[:1000]}', {text_length}, '{text_hash}', {chunk_type_num}, 1)"
                 
                 values_list.append(values)
             
@@ -332,10 +371,10 @@ class ClickHousePDFStorage:
         """获取文档处理状态"""
         try:
             query = f"""
-            SELECT processing_status, chunk_count, vector_count, 
-                   processing_time_seconds, error_message, updated_at
+            SELECT processing_status, chunks_count, vectors_count, 
+                   error_message, updated_at
             FROM pdf_documents 
-            WHERE id = '{doc_id}'
+            WHERE doc_id = '{doc_id}'
             """
             
             results = await self._execute_query(query)
@@ -346,9 +385,8 @@ class ClickHousePDFStorage:
                     'status': result[0],
                     'chunk_count': int(result[1]),
                     'vector_count': int(result[2]), 
-                    'processing_time': float(result[3]),
-                    'error_message': result[4],
-                    'updated_at': result[5]
+                    'error_message': result[3],
+                    'updated_at': result[4]
                 }
             
             return None
@@ -364,9 +402,8 @@ class ClickHousePDFStorage:
             SELECT 
                 processing_status,
                 count() as count,
-                sum(chunk_count) as total_chunks,
-                sum(vector_count) as total_vectors,
-                avg(processing_time_seconds) as avg_processing_time
+                sum(chunks_count) as total_chunks,
+                sum(vectors_count) as total_vectors
             FROM pdf_documents 
             GROUP BY processing_status
             """
@@ -385,13 +422,11 @@ class ClickHousePDFStorage:
                 count = int(result[1])
                 chunks = int(result[2]) if result[2] else 0
                 vectors = int(result[3]) if result[3] else 0
-                avg_time = float(result[4]) if result[4] else 0.0
                 
                 stats['by_status'][status] = {
                     'count': count,
                     'chunks': chunks,
-                    'vectors': vectors,
-                    'avg_processing_time': avg_time
+                    'vectors': vectors
                 }
                 
                 stats['total_documents'] += count
@@ -428,8 +463,8 @@ class ClickHousePDFStorage:
             vector_value = f"{vector_id}:{status}".replace("'", "\\'")  # 转义单引号
             chunk_id_escaped = chunk_id.replace("'", "\\'")  # 转义单引号
             
-            # 方法1: 尝试ALTER TABLE UPDATE语法
-            query = f"ALTER TABLE {self.database}.pdf_chunks UPDATE vector_id = '{vector_value}' WHERE chunk_id = '{chunk_id_escaped}'"
+            # 方法1: 尝试ALTER TABLE UPDATE语法，同时更新vector_id和vector_status
+            query = f"ALTER TABLE {self.database}.pdf_chunks UPDATE vector_id = '{vector_id}', vector_status = '{status}' WHERE chunk_id = '{chunk_id_escaped}'"
             
             try:
                 logger.debug(f"尝试ALTER UPDATE: {query}")
@@ -457,7 +492,7 @@ class ClickHousePDFStorage:
                     await self._execute_query(optimize_query)
                     
                     # 再次尝试标准UPDATE
-                    retry_query = f"ALTER TABLE {self.database}.pdf_chunks UPDATE vector_id = '{vector_value}' WHERE chunk_id = '{chunk_id_escaped}'"
+                    retry_query = f"ALTER TABLE {self.database}.pdf_chunks UPDATE vector_id = '{vector_id}', vector_status = '{status}' WHERE chunk_id = '{chunk_id_escaped}'"
                     await self._execute_query(retry_query)
                     
                     logger.debug(f"✅ 使用OPTIMIZE+UPDATE更新向量状态成功: {chunk_id} -> {status}")
@@ -473,6 +508,87 @@ class ClickHousePDFStorage:
         except Exception as e:
             logger.error(f"❌ 更新向量状态失败 {chunk_id}: {e}")
             return False
+    
+    async def batch_update_vector_status(self, updates: List[Dict[str, str]]) -> int:
+        """
+        批量更新向量状态，减少连接压力
+        
+        Args:
+            updates: 更新列表，每个元素包含 {chunk_id, vector_id, status}
+            
+        Returns:
+            成功更新的记录数
+        """
+        if not updates:
+            return 0
+        
+        try:
+            if not await self.initialize():
+                logger.error("ClickHouse连接初始化失败，无法批量更新向量状态")
+                return 0
+            
+            # 构建批量ALTER UPDATE语句
+            update_cases = []
+            chunk_ids = []
+            
+            for update in updates:
+                chunk_id = update['chunk_id'].replace("'", "\\'")
+                vector_id = update['vector_id'].replace("'", "\\'") 
+                status = update['status']
+                
+                chunk_ids.append(f"'{chunk_id}'")
+                
+            # 使用CASE语句进行批量更新
+            chunk_ids_list = ','.join(chunk_ids)
+            
+            # 分别更新vector_id和vector_status
+            vector_id_cases = []
+            status_cases = []
+            
+            for update in updates:
+                chunk_id = update['chunk_id'].replace("'", "\\'")
+                vector_id = update['vector_id'].replace("'", "\\'")
+                status = update['status']
+                
+                vector_id_cases.append(f"WHEN chunk_id = '{chunk_id}' THEN '{vector_id}'")
+                status_cases.append(f"WHEN chunk_id = '{chunk_id}' THEN '{status}'")
+            
+            vector_id_case = ' '.join(vector_id_cases)
+            status_case = ' '.join(status_cases)
+            
+            query = f"""
+            ALTER TABLE {self.database}.pdf_chunks UPDATE 
+                vector_id = CASE {vector_id_case} ELSE vector_id END,
+                vector_status = CASE {status_case} ELSE vector_status END
+            WHERE chunk_id IN ({chunk_ids_list})
+            """
+            
+            await self._execute_query(query)
+            logger.info(f"✅ 批量更新向量状态成功: {len(updates)} 条记录")
+            return len(updates)
+            
+        except Exception as e:
+            logger.error(f"❌ 批量更新向量状态失败: {e}")
+            # 降级到单个更新
+            logger.info("降级到单个更新模式")
+            success_count = 0
+            for update in updates:
+                try:
+                    success = await self.update_vector_status(
+                        update['chunk_id'], 
+                        update['vector_id'], 
+                        update['status']
+                    )
+                    if success:
+                        success_count += 1
+                        
+                    # 添加短暂延迟，避免连接压力
+                    await asyncio.sleep(0.01)
+                    
+                except Exception as single_error:
+                    logger.error(f"单个更新失败 {update['chunk_id']}: {single_error}")
+                    
+            return success_count
     
     async def close(self):
         """关闭连接"""
