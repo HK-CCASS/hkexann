@@ -160,6 +160,19 @@ database:
     read_timeout: 30
     max_retries: 3
 
+# ClickHouse股票发现配置 - 默认启用
+stock_discovery:
+  enabled: true  # 默认启用ClickHouse作为股票发现数据源
+  host: "localhost"
+  port: 8124  # ClickHouse HTTP端口
+  database: "hkex_analysis"
+  user: "root"
+  password: "123456"  # 直接配置密码
+  query_timeout: 60
+  batch_size: 1000
+  connection_timeout: 30
+  max_retries: 3
+
 # 守护者进程配置
 daemon:
   enabled: true                     # 是否启用守护者进程模式
@@ -233,3 +246,15 @@ advanced:
   timeout: 30
   overwrite_existing: false
   user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/101.0.4951.67 Safari/537.36"
+
+# 双重过滤器配置
+dual_filter:
+  stock_filter_enabled: true              # 启用股票过滤（只保留监控股票列表中的股票）
+  type_filter_enabled: true               # 启用类型过滤（按公告类型筛选）
+  excluded_categories:                    # 排除的公告类型列表
+    - "翌日披露報表"
+    - "展示文件"
+    - "月報表"
+    - "财务报表"
+    - "通函"
+  included_keywords: []                   # 必须包含的关键字列表（空列表表示不限制）

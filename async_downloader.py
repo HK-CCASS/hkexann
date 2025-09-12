@@ -159,11 +159,11 @@ class AsyncHKEXDownloader(HKEXDownloader):
     async def _ensure_session(self):
         """确保会话已创建"""
         if self._session is None:
-            # 创建连接器，限制连接数，并禁用SSL验证以解决证书问题
+            # 创建连接器，限制连接数，启用SSL验证
             connector = aiohttp.TCPConnector(
                 limit=self.max_concurrent * 2, 
                 limit_per_host=self.max_concurrent,
-                ssl=False  # 禁用SSL验证
+                ssl=True  # 启用SSL验证
             )
 
             # 创建会话

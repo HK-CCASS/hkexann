@@ -173,6 +173,7 @@ class DatabaseManager:
 
             # 提取股票代码
             stock_codes = []
+            stock_codes_set = set()  # 用于去重
             for row in results:
                 # 使用配置的字段映射获取股票代码
                 code = self._get_field_value(row, 'stock_code', db_config)
@@ -183,17 +184,28 @@ class DatabaseManager:
                             code = str(row[key]).strip()
                             break
 
-                if code and code.isdigit() and len(code) <= 8:  # 适配varchar(8)
-                    # 智能格式化股票代码
-                    formatted_code = self._format_stock_code(code)
-                    if formatted_code:
-                        stock_codes.append(formatted_code)
+                if code:
+                    # 处理.HK后缀：去除.HK后缀
+                    clean_code = code
+                    if code.upper().endswith('.HK'):
+                        clean_code = code[:-3]  # 去除.HK后缀
+                        logging.debug(f"去除.HK后缀: {code} -> {clean_code}")
+                    
+                    # 验证清理后的代码是否为有效数字格式
+                    if clean_code.isdigit() and len(clean_code) <= 8:  # 适配varchar(8)
+                        # 智能格式化股票代码
+                        formatted_code = self._format_stock_code(clean_code)
+                        if formatted_code and formatted_code not in stock_codes_set:
+                            stock_codes.append(formatted_code)
+                            stock_codes_set.add(formatted_code)  # 添加到去重集合
+                        elif formatted_code in stock_codes_set:
+                            logging.debug(f"跳过重复股票代码: {formatted_code}")
+                        else:
+                            logging.warning(f"跳过无效的股票代码: {clean_code}")
                     else:
-                        logging.warning(f"跳过无效的股票代码: {code}")
-                else:
-                    logging.warning(f"跳过无效的股票代码: {row}")
+                        logging.warning(f"跳过无效的股票代码格式: {clean_code} (原始: {code})")
 
-            logging.info(f"从数据库获取到 {len(stock_codes)} 个有效股票代码")
+            logging.info(f"从数据库获取到 {len(stock_codes)} 个有效股票代码（已去重）")
             return stock_codes
 
         except Exception as e:
@@ -741,7 +753,9 @@ class HKEXDownloader:
 
     def __init__(self, config_manager: ConfigManager):
         self.config = config_manager
-        self.headers = {"User-Agent": self.config.get('advanced', 'user_agent')}
+        # 获取User-Agent，提供默认值避免None
+        user_agent = self.config.get('advanced', 'user_agent') or 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        self.headers = {"User-Agent": user_agent}
         self.session = requests.Session()
         self.session.headers.update(self.headers)
 
@@ -766,7 +780,7 @@ class HKEXDownloader:
 
         for attempt in range(self.retry_attempts):
             try:
-                url = f'{base_url}{stock_search}?&callback={callback}&lang=ZH&type=A&name={stockcode}&market={market}&_=1653821865437'
+                url = f'{base_url}{stock_search}?&callback={callback}&lang=ZH&type=A&name={stockcode}&market={market}&_={int(time.time()*1000)}'
                 logging.info(f"股票ID查询URL: {url}")
                 response = self.session.get(url, timeout=self.timeout)
 
@@ -791,6 +805,7 @@ class HKEXDownloader:
                     continue
                 else:
                     raise Exception(f"获取股票 {stockcode} 信息失败: {str(e)}")
+        return None
 
     def get_stockid(self, stockcode: str) -> str:
         """根据股票代码获取股票ID（保持向后兼容）"""
@@ -853,14 +868,31 @@ class HKEXDownloader:
                 data = data.replace('"[{', '[{').replace('}]"', '}]').replace('\\', "").replace('u2013', "-").replace(
                     'u0026', "-")
                 data_json = json.loads(data)
-                logging.info(f"API响应数据: {data_json}")
+                # logging.info(f"API响应数据: {data_json}")
                 if not data_json or 'result' not in data_json or not data_json['result']:
                     logging.warning(
                         f"未找到符合条件的公告 - 股票: {stockcode}, 日期: {start_date_str} 到 {end_date_str}")
                     return [], stock_name
 
                 announcements = []
-                for item in data_json['result']:
+                
+                # 处理result字段可能是字符串的情况
+                result_data = data_json['result']
+                if isinstance(result_data, str):
+                    # 如果result是字符串，尝试解析为JSON数组
+                    try:
+                        if result_data.strip() == '' or result_data == '[]':
+                            result_data = []
+                        else:
+                            result_data = json.loads(result_data)
+                    except:
+                        logging.warning(f"无法解析result字段: {result_data}")
+                        result_data = []
+                elif not isinstance(result_data, list):
+                    logging.warning(f"result字段类型异常: {type(result_data)}")
+                    result_data = []
+                
+                for item in result_data:
                     try:
                         # 获取标题
                         title = item['TITLE'].replace('/', "-")
