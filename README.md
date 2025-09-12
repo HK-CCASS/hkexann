@@ -1,12 +1,20 @@
-# HKEX 公告下载器
+# HKEX 公告下载器与监听系统
 
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-一个功能强大的香港交易所（HKEX）上市公司公告批量下载工具，**采用纯净LONG_TEXT分类系统**，直接使用港交所官方分类，支持异步高速下载、智能目录结构、定时任务等功能。
+一个功能强大的香港交易所（HKEX）上市公司公告下载与实时监听系统，结合了经典下载器和企业级微服务架构，支持异步高速下载、实时监听、向量化处理、多数据库存储等完整功能。
 
-## 功能特点
+## 系统架构
 
+本项目采用双系统架构设计：
+
+1. **经典下载器** (`main.py`) - 2100+行独立工具，适合批量历史数据下载
+2. **增强监听系统** (`services/` + `start_enhanced_monitor.py`) - 18000+行微服务架构，提供企业级实时监听能力
+
+## 核心功能
+
+### 经典下载器功能
 - 📥 **批量下载**：支持单个或多个股票的公告批量下载
 - 🚀 **异步高速下载**：使用异步技术大幅提升下载速度
 - 🎯 **纯净LONG_TEXT分类**：直接使用港交所官方LONG_TEXT作为分类结果，无任何映射转换
@@ -18,6 +26,16 @@
 - 📊 **进度显示**：实时显示下载进度和统计信息
 - 🔍 **文件验证**：自动检测和处理无效下载文件（如2KB错误页面）
 
+### 增强监听系统功能
+- 🔄 **实时监听**：每5分钟自动轮询港交所API，获取最新公告
+- 🎯 **双重过滤**：股票过滤器 + 公告类型过滤器，精准筛选目标内容
+- 💾 **多数据库支持**：支持ClickHouse时序数据库、MySQL关系数据库、Milvus向量数据库
+- 📄 **文档处理**：自动PDF文本提取、向量化处理
+- 🔍 **语义搜索**：基于4096维向量的语义相似度搜索
+- 🏥 **健康监控**：完整的系统健康检查和故障恢复机制
+- ⚡ **高性能架构**：基于asyncio的异步微服务架构
+- 🔧 **服务管理**：连接池、重试机制、错误恢复等企业级特性
+
 ## 快速开始
 
 ### 安装
@@ -28,7 +46,16 @@ git clone https://github.com/yourusername/hkexann.git
 cd hkexann
 ```
 
-2. 安装依赖：
+2. 环境配置：
+```bash
+# 复制环境变量模板
+cp .env.template .env
+
+# 编辑环境变量，配置数据库连接等
+vim .env
+```
+
+3. 安装依赖：
 ```bash
 # 基础依赖
 pip install -r requirements.txt
@@ -41,9 +68,14 @@ pip install schedule psutil
 
 # 繁简转换依赖（可选）
 pip install opencc-python-reimplemented
+
+# 增强监听系统依赖（企业级功能）
+pip install clickhouse-driver pymilvus sentence-transformers
 ```
 
 ### 基础用法
+
+#### 经典下载器
 
 1. **下载单个股票的公告**：
 ```bash
@@ -63,6 +95,18 @@ python main.py -s 00700 -k "財務報告" "年報"
 4. **使用异步模式（推荐）**：
 ```bash
 python main.py -s 00700 --async
+```
+
+#### 增强监听系统
+
+1. **启动实时监听**：
+```bash
+python start_enhanced_monitor.py
+```
+
+2. **强制异步模式监听**：
+```bash
+HKEX_FORCE_ASYNC=true python main.py --config config.yaml
 ```
 
 ### 配置文件使用
@@ -276,15 +320,25 @@ python main.py -s 00700 -k "年報" "財務報告"
 ### Q: 支持哪些股票代码格式？
 A: 支持标准的5位数股票代码，如 00700（腾讯）、00001（长和）等。
 
-## 依赖项
+## 系统依赖
 
+### 基础依赖
 - Python 3.8+
 - requests
 - pyyaml
-- pymysql (可选，数据库功能)
-- aiohttp, aiofiles (可选，异步下载)
-- schedule, psutil (可选，守护进程)
-- opencc (可选，繁简转换)
+- pymysql (数据库功能)
+
+### 经典下载器依赖  
+- aiohttp, aiofiles (异步下载)
+- schedule, psutil (守护进程)
+- opencc (繁简转换)
+
+### 增强监听系统依赖
+- clickhouse-driver (ClickHouse数据库)
+- pymilvus (Milvus向量数据库) 
+- sentence-transformers (文本向量化)
+- asyncio (异步处理)
+- tenacity (重试机制)
 
 ## 贡献
 
@@ -304,7 +358,18 @@ Victor Suen
 
 ## 更新日志
 
-### v2.1 (2025-07)
+### v3.0 (2025-09) - 企业级架构升级
+- **🏗️ 微服务架构**：新增18000+行企业级监听系统，基于services/目录的微服务架构
+- **📡 实时监听**：增强监听系统支持每5分钟自动轮询港交所API
+- **💾 多数据库支持**：集成ClickHouse时序数据库、Milvus向量数据库
+- **📄 文档处理管道**：自动PDF文本提取与向量化处理
+- **🔍 语义搜索**：基于4096维向量的语义相似度搜索
+- **🎯 双重过滤系统**：股票过滤器 + 公告类型过滤器，精准筛选
+- **🏥 健康监控**：完整的系统健康检查和故障恢复机制
+- **⚡ 异步优化**：全面采用asyncio异步架构，大幅提升性能
+- **🔧 企业级特性**：连接池、重试机制、错误恢复、服务管理
+
+### v2.1 (2025-07) - 纯净分类系统
 - **重大更新**：实现纯净LONG_TEXT分类系统
 - **零映射转换**：直接使用港交所官方LONG_TEXT作为分类结果
 - **智能目录解析**：自动创建1-2-3级目录层次结构
@@ -313,7 +378,7 @@ Victor Suen
 - **代码优化**：清理332行旧分类逻辑，提升系统性能
 - **文件命名优化**：格式改为"时间_股票代码_公司名称_公告标题"
 
-### v2.0 (2024-01)
+### v2.0 (2024-01) - 异步与自动化
 - 新增异步下载模式，大幅提升下载速度
 - 新增守护进程模式，支持定时自动下载  
 - 新增公告自动分类功能
