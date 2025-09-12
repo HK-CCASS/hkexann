@@ -13,9 +13,24 @@ from typing import Dict, Any
 import argparse
 import yaml
 from services.monitor.enhanced_announcement_processor import EnhancedAnnouncementProcessor
-# 设置日志格式
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-                    handlers=[logging.StreamHandler(), logging.FileHandler('enhanced_monitor.log')])
+# 设置日志格式 - 强制配置所有handlers
+import logging
+import sys
+
+# 清除现有配置
+root_logger = logging.getLogger()
+root_logger.handlers.clear()
+
+# 强制重新配置
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler('enhanced_monitor.log')
+    ],
+    force=True  # Python 3.8+ 支持，强制重新配置
+)
 
 logger = logging.getLogger(__name__)
 

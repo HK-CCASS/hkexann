@@ -29,8 +29,9 @@ import threading
 import gc
 from collections import defaultdict
 
-# 配置日志
-logging.basicConfig(level=logging.INFO)
+# 配置日志（如果没有已配置的handler）
+if not logging.getLogger().hasHandlers():
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # 设置路径
