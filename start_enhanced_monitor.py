@@ -73,14 +73,18 @@ def load_config(config_path: str = "config.yaml") -> Dict[str, Any]:
                                          'callback_param': 'callback', 'market': 'SEHK'}),
 
             # API监听配置
-            'api_monitor': {'poll_interval': 300,  # 5分钟检查一次
+            'api_monitor': {'poll_interval': 60,  # 5分钟检查一次
                             'timeout': 30, 'max_retries': 3},
 
-            # 双重过滤配置
-            'realtime_monitoring': {'filtering': {'stock_filter_enabled': True, 'type_filter_enabled': True,
-                                                  'excluded_categories': config.get('announcement_categories', {}).get(
-                                                      'excluded_categories', ['翌日披露報表', '展示文件', '月報表']),
-                                                  'included_keywords': []}},
+            # 双重过滤配置 - 优先使用 dual_filter 配置节
+            'realtime_monitoring': {'filtering': 
+                config.get('dual_filter', {
+                    'stock_filter_enabled': True, 
+                    'type_filter_enabled': True,
+                    'excluded_categories': [],
+                    'included_keywords': []
+                })
+            },
 
             # ClickHouse股票发现配置（从config.yaml的stock_discovery段获取，支持环境变量）
             'stock_discovery': config.get('stock_discovery', {
@@ -96,7 +100,11 @@ def load_config(config_path: str = "config.yaml") -> Dict[str, Any]:
             'downloader_integration': {'use_existing_downloader': True,
                                        'download_directory': config.get('settings', {}).get('save_path', './hkexann'),
                                        'enable_filtering': True,
-                                       'timeout': config.get('advanced', {}).get('timeout', 30)},
+                                       'timeout': config.get('advanced', {}).get('timeout', 30),
+                                       # 🚀 新增：智能分类配置传递 - 统一启用智能分类
+                                       'enable_smart_classification': True,  # 启用智能分类，与main.py保持一致
+                                       'common_keywords': config.get('common_keywords', {}),
+                                       'announcement_categories': config.get('announcement_categories', {})},
             'max_concurrent': config.get('async', {}).get('max_concurrent', 5),
             'requests_per_second': config.get('async', {}).get('requests_per_second', 5),
 
@@ -107,14 +115,14 @@ def load_config(config_path: str = "config.yaml") -> Dict[str, Any]:
                                           'max_concurrent': 5},
 
             # 调度配置
-            'scheduler': {'stock_sync_interval_hours': 6,  # 6小时同步一次股票列表
-                          'api_poll_interval_seconds': 300,  # 5分钟检查一次API
+            'scheduler': {'stock_sync_interval_hours': 0.5,  # 半小时同步一次股票列表
+                          'api_poll_interval_seconds': 60,  # 1分钟检查一次API
                           'max_concurrent_processing': 5, 'enable_auto_stock_sync': True,
                           'enable_continuous_monitoring': True},
 
             # 历史数据处理配置
             'historical_processing': {'historical_days': 365,  # 常规模式历史天数
-                                      'first_run_historical_days': 1,  # 首次运行历史天数，快速启动
+                                      'first_run_historical_days':30,  # 首次运行历史天数，快速启动
                                       'stock_batch_size': 10, 'date_chunk_days': 30, 'max_concurrent_historical': 3,
                                       'api_delay': 2.0},
 

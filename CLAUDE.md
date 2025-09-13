@@ -14,12 +14,12 @@ This is a comprehensive Hong Kong Stock Exchange (HKEX) announcement downloader 
 ### Core Components
 
 - **main.py** (2,100+ lines) - Legacy downloader with CLI interface, needs refactoring due to size
-- **services/** - Modular microservices architecture:
-  - `monitor/` - Real-time API monitoring (18,000+ lines across 59 files)  
+- **services/** - Modular microservices architecture (59 Python files):
+  - `monitor/` - Real-time API monitoring (18,000+ lines across multiple files)  
   - `data_loader/` - Database integration (ClickHouse, MySQL)
   - `milvus/` - Vector database for semantic search
   - `document_processor/` - PDF processing and text extraction
-  - `embeddings/` - Text vectorization services
+  - `embeddings/` - Text vectorization services with SiliconFlow integration
   - `storage/` - File management utilities
 
 ### Data Flow
@@ -64,6 +64,9 @@ python main.py --test-db
 
 # Download from database stock list
 python main.py --db-stocks
+
+# Custom database query
+python main.py --db-query "SELECT stockCode FROM issue WHERE status = 'normal'"
 ```
 
 ### Daemon Mode
@@ -71,6 +74,23 @@ python main.py --db-stocks
 python main.py --daemon-start
 python main.py --daemon-status
 python main.py --daemon-stop
+python main.py --daemon-restart
+python main.py --daemon-test
+```
+
+### Development and Testing
+```bash
+# Install dependencies
+pip install -r requirements.txt
+
+# Check configuration validity
+python main.py --check-config
+
+# List all configured tasks
+python main.py --list-tasks
+
+# Run specific task by name
+python main.py --run-task "task_name"
 ```
 
 ## Configuration
@@ -83,7 +103,10 @@ cp .env.template .env
 ```
 
 2. Required environment variables:
-- `DB_PASSWORD` - MySQL database password
+- `SILICONFLOW_API_KEY` - SiliconFlow API key for LLM and embedding services (required)
+- `CLICKHOUSE_PASSWORD` - ClickHouse database password (required)
+- `CCASS_PASSWORD` - CCASS database password (required)
+- `DB_PASSWORD` - MySQL database password (recommended)
 - `HKEX_FORCE_ASYNC` - Force async mode for monitoring
 
 ### Key Config Files
@@ -129,8 +152,18 @@ The project follows a hybrid pattern:
 ### Database Schema
 
 - **MySQL**: Stock metadata and lists (`ccass` database)
-- **ClickHouse**: Time-series announcement data
+- **ClickHouse**: Time-series announcement data (`hkex_analysis` database)
 - **Milvus**: 4096-dimension vectors for semantic search
+
+### Technology Stack
+
+- **Core**: Python 3.8+ with asyncio for high-performance concurrent processing
+- **Web**: aiohttp for async HTTP requests, requests for sync operations
+- **Databases**: MySQL (PyMySQL), ClickHouse (clickhouse-driver), Milvus (pymilvus)
+- **ML/AI**: SiliconFlow API for embeddings and LLM services
+- **Document Processing**: PDF text extraction and vectorization pipeline
+- **Configuration**: YAML-based configuration with environment variable substitution
+- **Scheduling**: Schedule library for daemon mode, psutil for process management
 
 ### Monitoring System vs Classic Downloader
 

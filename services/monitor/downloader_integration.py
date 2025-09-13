@@ -60,6 +60,25 @@ class RealtimeDownloaderWrapper:
         self.preserve_original_filename = downloader_config.get('preserve_original_filename', True)  # 默认使用新格式
         self.create_date_subdirs = downloader_config.get('create_date_subdirs', True)  # 默认创建日期子目录
         self.enable_progress_bar = downloader_config.get('enable_progress_bar', True)
+        
+        # 🚀 新增：智能分类支持
+        self.enable_smart_classification = downloader_config.get('enable_smart_classification', False)
+        self.classifier = None
+        
+        # 初始化智能分类器
+        if self.enable_smart_classification:
+            try:
+                from services.monitor.utils.announcement_classifier import AnnouncementClassifier
+                # 优先从downloader_config获取，如果没有则从主config获取
+                classifier_config = {
+                    'common_keywords': downloader_config.get('common_keywords') or config.get('common_keywords', {}),
+                    'announcement_categories': downloader_config.get('announcement_categories') or config.get('announcement_categories', {})
+                }
+                self.classifier = AnnouncementClassifier(classifier_config)
+                logger.info("✅ 智能分类器初始化成功")
+            except Exception as e:
+                logger.error(f"❌ 智能分类器初始化失败: {e}")
+                self.enable_smart_classification = False
 
         # 初始化下载器
         if self.use_existing_downloader:
@@ -147,12 +166,53 @@ class RealtimeDownloaderWrapper:
             download_dir = Path(self.download_directory)
             download_dir.mkdir(parents=True, exist_ok=True)
 
-            if self.create_date_subdirs:
-                # 创建日期子目录，使用 yyyy-mm-dd 格式
-                date_formatted = self._format_date(announcement.get('DATE_TIME', ''))
-                if date_formatted:
-                    download_dir = download_dir / date_formatted
-                    download_dir.mkdir(parents=True, exist_ok=True)
+            # 🚀 智能分类路径生成
+            if self.enable_smart_classification and self.classifier:
+                try:
+                    # 使用智能分类器生成分类路径
+                    category_path, keyword_category, priority, confidence = self.classifier.classify_announcement(announcement)
+                    
+                    if category_path:
+                        # 创建分类子目录
+                        download_dir = download_dir / category_path
+                        
+                        # 添加公司信息子目录
+                        stock_code = announcement.get('STOCK_CODE', 'UNKNOWN').replace('.HK', '')
+                        company_info = f"{stock_code}"
+                        download_dir = download_dir / company_info
+                        
+                        # 添加日期子目录
+                        if self.create_date_subdirs:
+                            date_formatted = self._format_date(announcement.get('DATE_TIME', ''))
+                            if date_formatted:
+                                download_dir = download_dir / date_formatted
+                        
+                        download_dir.mkdir(parents=True, exist_ok=True)
+                        
+                        logger.info(f"🎯 智能分类: {keyword_category} (优先级: {priority}, 置信度: {confidence:.2f})")
+                        logger.info(f"📁 分类路径: {category_path}")
+                    else:
+                        # 分类失败，使用传统日期目录
+                        if self.create_date_subdirs:
+                            date_formatted = self._format_date(announcement.get('DATE_TIME', ''))
+                            if date_formatted:
+                                download_dir = download_dir / date_formatted
+                                download_dir.mkdir(parents=True, exist_ok=True)
+                except Exception as e:
+                    logger.warning(f"⚠️ 智能分类失败，使用默认路径: {e}")
+                    # 分类失败，使用传统日期目录
+                    if self.create_date_subdirs:
+                        date_formatted = self._format_date(announcement.get('DATE_TIME', ''))
+                        if date_formatted:
+                            download_dir = download_dir / date_formatted
+                            download_dir.mkdir(parents=True, exist_ok=True)
+            else:
+                # 传统的日期目录模式
+                if self.create_date_subdirs:
+                    date_formatted = self._format_date(announcement.get('DATE_TIME', ''))
+                    if date_formatted:
+                        download_dir = download_dir / date_formatted
+                        download_dir.mkdir(parents=True, exist_ok=True)
 
             file_path = download_dir / filename
 
@@ -170,6 +230,38 @@ class RealtimeDownloaderWrapper:
                 file_size = file_path.stat().st_size if file_path.exists() else 0
 
                 logger.info(f"✅ 公告下载成功: {filename}")
+                
+                # 如果有多个分类，创建符号链接
+                if self.enable_smart_classification and hasattr(self, 'classifier'):
+                    try:
+                        # 获取所有匹配的关键字
+                        all_keywords_str = getattr(self.classifier, '_last_all_keywords', '')
+                        if all_keywords_str and '+' in all_keywords_str:
+                            # 有多个关键字匹配，需要创建额外的链接
+                            all_categories = all_keywords_str.split('+')
+                            primary_category = category_path if 'category_path' in locals() else None
+                            
+                            if primary_category:
+                                for category in all_categories:
+                                    if category != primary_category:
+                                        # 创建次要分类的目录
+                                        link_dir = download_dir.parent.parent / category / stock_code
+                                        link_dir.mkdir(parents=True, exist_ok=True)
+                                        link_path = link_dir / filename
+                                        
+                                        # 创建符号链接（如果还不存在）
+                                        if not link_path.exists():
+                                            try:
+                                                link_path.symlink_to(file_path)
+                                                logger.info(f"📎 创建符号链接: {category}/{stock_code}/{filename}")
+                                            except Exception as e:
+                                                # Windows可能不支持符号链接，改为复制文件
+                                                import shutil
+                                                shutil.copy2(file_path, link_path)
+                                                logger.info(f"📄 复制文件到: {category}/{stock_code}/{filename}")
+                    except Exception as e:
+                        logger.debug(f"创建多分类链接时出错: {e}")
+                
                 return {"success": True, "file_path": str(file_path), "filename": filename, "file_size": file_size,
                     "download_time": download_time, "announcement": announcement}
             else:

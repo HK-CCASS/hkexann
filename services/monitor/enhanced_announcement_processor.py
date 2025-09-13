@@ -148,14 +148,22 @@ class EnhancedAnnouncementProcessor:
             
             StockDiscoveryManager = real_stock_discovery.StockDiscoveryManager
             
-            # 从stock_discovery配置创建ClickHouse客户端
+            # 从stock_discovery配置创建股票发现管理器
             stock_discovery_config = self.config.get('stock_discovery', {})
             
             if stock_discovery_config.get('enabled', False):
-                logger.info(f"使用ClickHouse股票发现: {stock_discovery_config.get('host', 'localhost')}:{stock_discovery_config.get('port', 8124)}")
-                self.stock_discovery = StockDiscoveryManager(stock_discovery_config)
+                stock_list_source = stock_discovery_config.get('stock_list_source', 'clickhouse')
+                
+                if stock_list_source == 'clickhouse':
+                    logger.info(f"使用ClickHouse股票发现: {stock_discovery_config.get('host', 'localhost')}:{stock_discovery_config.get('port', 8124)}")
+                    self.stock_discovery = StockDiscoveryManager(stock_discovery_config)
+                elif stock_list_source == 'custom':
+                    logger.info("使用自定义股票列表")
+                    self.stock_discovery = StockDiscoveryManager(stock_discovery_config)
+                else:
+                    raise ValueError(f"不支持的股票列表来源: {stock_list_source}")
             else:
-                logger.warning("ClickHouse股票发现未启用，将使用后备股票列表")
+                logger.warning("股票发现功能未启用，将使用默认后备股票列表")
                 # 创建一个简单的后备股票发现器
                 class FallbackStockDiscovery:
                     def __init__(self):
@@ -217,7 +225,7 @@ class EnhancedAnnouncementProcessor:
             logger.info("🔬 初始化双重过滤器...")
             self.dual_filter = DualAnnouncementFilter(
                 self.monitored_stocks, 
-                self.config.get('dual_filter', {})
+                self.config
             )
             
             # 4. 初始化API监听器
@@ -226,12 +234,16 @@ class EnhancedAnnouncementProcessor:
             
             # 5. 初始化历史批量处理器 (修复后的版本)
             logger.info("📚 初始化修复后的历史批量处理器...")
+            # 合并历史处理配置和主配置，确保包含common_keywords
+            historical_config = self.config.get('historical_processing', {})
+            historical_config['common_keywords'] = self.config.get('common_keywords', {})
+            historical_config['announcement_categories'] = self.config.get('announcement_categories', {})
             self.historical_processor = CorrectedHistoricalProcessor(
                 hkex_downloader=self.downloader.get_underlying_downloader(),
                 dual_filter=self.dual_filter,
                 vectorizer=self.vector_processor,
                 monitored_stocks=self.monitored_stocks,
-                config=self.config.get('historical_processing', {})
+                config=historical_config
             )
             
             # 6. 检查并执行首次历史处理

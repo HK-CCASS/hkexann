@@ -367,24 +367,38 @@ class HKEXPDFParser:
                 stock_code_found = False
                 stock_code_index = -1
                 
-                # 特殊处理：检查文件名是否以 "股票代码.HK_" 格式开头
+                # 特殊处理：检查文件名各部分是否包含 "股票代码.HK" 格式
                 filename = parts[-1] if parts else ""
                 logger.debug(f"检查文件名: {filename}")
                 if filename and '_' in filename:
-                    first_part = filename.split('_')[0]
-                    logger.debug(f"文件名第一部分: {first_part}")
-                    if '.' in first_part and first_part.endswith('.HK'):
-                        # 提取.HK前的部分作为股票代码
-                        potential_code = first_part.split('.')[0]
-                        logger.debug(f"潜在股票代码: {potential_code}")
-                        if potential_code.isdigit() and (len(potential_code) == 4 or len(potential_code) == 5):
-                            stock_code = potential_code
+                    filename_parts = filename.split('_')
+                    # 检查所有部分，不仅仅是第一部分
+                    for i, part in enumerate(filename_parts):
+                        logger.debug(f"文件名第{i+1}部分: {part}")
+                        
+                        # 首先检查.HK格式的股票代码
+                        if '.' in part and part.upper().endswith('.HK'):
+                            # 提取.HK前的部分作为股票代码
+                            potential_code = part.split('.')[0]
+                            logger.debug(f"潜在股票代码: {potential_code}")
+                            if potential_code.isdigit() and (len(potential_code) == 4 or len(potential_code) == 5):
+                                stock_code = potential_code
+                                stock_code_found = True
+                                logger.info(f"从文件名第{i+1}部分提取股票代码: {stock_code} (原格式: {part})")
+                                break
+                            else:
+                                logger.debug(f"潜在代码不符合格式: {potential_code}")
+                        # 检查直接的数字股票代码格式（实时文件名格式）
+                        elif part.isdigit() and (len(part) == 4 or len(part) == 5):
+                            stock_code = part
                             stock_code_found = True
-                            logger.info(f"从文件名提取股票代码: {stock_code} (原格式: {first_part})")
+                            logger.info(f"从文件名第{i+1}部分提取股票代码: {stock_code}")
+                            break
                         else:
-                            logger.debug(f"潜在代码不符合格式: {potential_code}")
-                    else:
-                        logger.debug(f"第一部分不是.HK格式: {first_part}")
+                            logger.debug(f"第{i+1}部分不是股票代码格式: {part}")
+                    
+                    if not stock_code_found:
+                        logger.debug(f"文件名各部分均未找到.HK格式的股票代码")
                 else:
                     logger.debug(f"文件名不含下划线或为空: {filename}")
                 
@@ -429,7 +443,7 @@ class HKEXPDFParser:
                 raise
             
             if len(filename_parts) >= 4:
-                # 解析标准格式: 时间_股票代码_公司名称_公告文件名
+                # 解析标准格式或实时格式
                 try:
                     # 第1部分: 日期 (YYYY-MM-DD)
                     date_str = filename_parts[0]
@@ -437,22 +451,41 @@ class HKEXPDFParser:
                 except ValueError:
                     logger.debug(f"无法解析日期: {filename_parts[0]}")
 
-                # 第2部分: 股票代码（验证与目录一致性）
-                if len(filename_parts) > 1:
+                # 查找股票代码的位置（可能在不同位置）
+                stock_code_position = -1
+                for i, part in enumerate(filename_parts):
+                    if part.isdigit() and (len(part) == 4 or len(part) == 5):
+                        stock_code_position = i
+                        extracted_stock_code = part
+                        logger.debug(f"在文件名位置{i}找到股票代码: {part}")
+                        break
+                
+                # 如果没有找到股票代码，使用传统逻辑（第2部分）
+                if stock_code_position == -1 and len(filename_parts) > 1:
                     file_stock_code = filename_parts[1]
                     if file_stock_code == stock_code:
                         extracted_stock_code = file_stock_code
+                        stock_code_position = 1
                     else:
                         logger.debug(f"文件名股票代码 {file_stock_code} 与目录 {stock_code} 不一致")
-                        # 如果目录股票代码格式不正确，使用文件名中的
                         if file_stock_code.isdigit() and (len(file_stock_code) == 4 or len(file_stock_code) == 5):
                             extracted_stock_code = file_stock_code
+                            stock_code_position = 1
 
-                    # 第3部分: 公司名称
+                # 根据股票代码位置提取公司名称和文档标题
+                if stock_code_position > 0:
+                    # 股票代码前的部分（除日期）组成公司名称
+                    company_parts = filename_parts[1:stock_code_position]
+                    company_name = '_'.join(company_parts) if company_parts else ""
+                    
+                    # 股票代码后的部分组成文档标题
+                    if stock_code_position + 1 < len(filename_parts):
+                        title_parts = filename_parts[stock_code_position + 1:]
+                        document_title = '_'.join(title_parts)
+                else:
+                    # 回退到传统逻辑
                     if len(filename_parts) > 2:
                         company_name = filename_parts[2]
-
-                    # 第4部分及以后: 文档标题
                     if len(filename_parts) > 3:
                         document_title = '_'.join(filename_parts[3:])
 

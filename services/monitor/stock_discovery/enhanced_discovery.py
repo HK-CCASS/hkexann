@@ -230,32 +230,57 @@ class EnhancedStockDiscoveryManager:
             return StockDiscoveryResult(stocks=self.cached_stocks.copy(), source=self.cache_source, success=True,
                 discovery_time=time.time() - start_time, normalized_count=len(self.cached_stocks))
 
-        logger.info("开始4级后备股票发现...")
-
-        # 第1级：尝试ClickHouse财技表
-        result = await self._discover_from_clickhouse()
-        if result.success and result.stocks:
+        # 检查stock_list_source配置以决定股票发现策略
+        stock_discovery_config = getattr(self.config_manager, 'config', {}).get('stock_discovery', {})
+        stock_list_source = stock_discovery_config.get('stock_list_source', 'clickhouse')
+        
+        logger.info(f"开始股票发现，来源策略: {stock_list_source}")
+        
+        if stock_list_source == 'custom':
+            # 自定义模式：直接使用配置文件，如果失败再用后备方案
+            logger.info("使用自定义股票列表模式")
+            result = await self._discover_from_config()
+            if result.success and result.stocks:
+                return self._finalize_discovery(result, start_time)
+            logger.warning(f"自定义股票列表发现失败: {result.error_message}，启用后备方案")
+            
+            # 自定义模式的后备方案：港股通核心列表
+            result = await self._discover_from_hkconnect()
+            if result.success and result.stocks:
+                return self._finalize_discovery(result, start_time)
+            
+            # 最终保障 - 最小核心列表
+            result = await self._discover_from_minimal()
             return self._finalize_discovery(result, start_time)
+        
+        else:
+            # 传统4级后备机制 (clickhouse或其他模式)
+            logger.info("开始4级后备股票发现...")
 
-        logger.warning(f"ClickHouse发现失败: {result.error_message}")
+            # 第1级：尝试ClickHouse财技表
+            result = await self._discover_from_clickhouse()
+            if result.success and result.stocks:
+                return self._finalize_discovery(result, start_time)
 
-        # 第2级：尝试配置文件静态列表
-        result = await self._discover_from_config()
-        if result.success and result.stocks:
+            logger.warning(f"ClickHouse发现失败: {result.error_message}")
+
+            # 第2级：尝试配置文件静态列表
+            result = await self._discover_from_config()
+            if result.success and result.stocks:
+                return self._finalize_discovery(result, start_time)
+
+            logger.warning(f"配置文件发现失败: {result.error_message}")
+
+            # 第3级：使用港股通核心列表
+            result = await self._discover_from_hkconnect()
+            if result.success and result.stocks:
+                return self._finalize_discovery(result, start_time)
+
+            logger.warning(f"港股通列表失败: {result.error_message}")
+
+            # 第4级：最终保障 - 最小核心列表
+            result = await self._discover_from_minimal()
             return self._finalize_discovery(result, start_time)
-
-        logger.warning(f"配置文件发现失败: {result.error_message}")
-
-        # 第3级：使用港股通核心列表
-        result = await self._discover_from_hkconnect()
-        if result.success and result.stocks:
-            return self._finalize_discovery(result, start_time)
-
-        logger.warning(f"港股通列表失败: {result.error_message}")
-
-        # 第4级：最终保障 - 最小核心列表
-        result = await self._discover_from_minimal()
-        return self._finalize_discovery(result, start_time)
 
     async def _discover_from_clickhouse(self) -> StockDiscoveryResult:
         """
@@ -337,20 +362,59 @@ class EnhancedStockDiscoveryManager:
             stocks = set()
             metadata = {}
 
-            # 检查config.yaml中的下载任务
+            # 检查config.yaml中的股票发现配置
             if hasattr(self.config_manager, 'config') and self.config_manager.config:
-                download_tasks = self.config_manager.config.get('download_tasks', [])
+                # 1. 优先检查stock_discovery.custom_stocks配置
+                stock_discovery_config = self.config_manager.config.get('stock_discovery', {})
+                custom_stocks_config = stock_discovery_config.get('custom_stocks', {})
+                
+                # 从直接配置的股票代码列表读取
+                if custom_stocks_config.get('stock_codes'):
+                    custom_codes = custom_stocks_config.get('stock_codes', [])
+                    stocks.update(custom_codes)
+                    metadata['custom_codes_count'] = len(custom_codes)
+                    logger.info(f"从custom_stocks.stock_codes读取到 {len(custom_codes)} 只股票")
+                
+                # 从文件读取
+                if custom_stocks_config.get('from_file'):
+                    file_path = custom_stocks_config.get('from_file')
+                    try:
+                        with open(file_path, 'r', encoding='utf-8') as f:
+                            file_stocks = [line.strip() for line in f.readlines() if line.strip()]
+                            stocks.update(file_stocks)
+                            metadata['file_stocks_count'] = len(file_stocks)
+                            logger.info(f"从文件 {file_path} 读取到 {len(file_stocks)} 只股票")
+                    except Exception as e:
+                        logger.error(f"从文件 {file_path} 读取股票代码失败: {e}")
+                
+                # 从数据库读取 (如果启用)
+                if custom_stocks_config.get('from_database'):
+                    try:
+                        db_stocks = await self._load_stocks_from_database()
+                        stocks.update(db_stocks)
+                        metadata['database_stocks_count'] = len(db_stocks)
+                        logger.info(f"从数据库读取到 {len(db_stocks)} 只股票")
+                    except Exception as e:
+                        logger.error(f"从数据库读取股票代码失败: {e}")
 
+                # 2. 回退到传统的下载任务配置 (如果custom_stocks为空)
+                download_tasks = self.config_manager.config.get('download_tasks', [])
+                task_stocks = set()
                 for task in download_tasks:
                     if not task.get('enabled', False):
                         continue
-
                     stock_code = task.get('stock_code')
                     if stock_code:
                         if isinstance(stock_code, list):
-                            stocks.update(stock_code)
+                            task_stocks.update(stock_code)
                         else:
-                            stocks.add(str(stock_code))
+                            task_stocks.add(str(stock_code))
+                
+                # 如果没有从custom_stocks读到股票，使用download_tasks作为后备
+                if not stocks and task_stocks:
+                    stocks.update(task_stocks)
+                    metadata['download_tasks_fallback'] = True
+                    logger.info(f"custom_stocks为空，使用download_tasks作为后备: {len(task_stocks)} 只股票")
 
                 metadata['download_tasks_count'] = len(download_tasks)
                 metadata['enabled_tasks'] = sum(1 for task in download_tasks if task.get('enabled', False))
@@ -383,6 +447,78 @@ class EnhancedStockDiscoveryManager:
 
             return StockDiscoveryResult(stocks=set(), source=StockSource.CONFIG_FILE, success=False,
                 error_message=error_msg, discovery_time=time.time() - start_time)
+
+    async def _load_stocks_from_database(self) -> Set[str]:
+        """从MySQL数据库加载股票代码 (用于custom模式的from_database选项)"""
+        try:
+            # 获取数据库配置
+            if not hasattr(self.config_manager, 'config') or not self.config_manager.config:
+                logger.warning("配置管理器或配置为空")
+                return set()
+            
+            db_config = self.config_manager.config.get('database', {})
+            if not db_config.get('enabled', False):
+                logger.warning("数据库未启用，跳过数据库股票读取")
+                return set()
+            
+            # 尝试导入数据库连接器
+            try:
+                import mysql.connector
+            except ImportError:
+                logger.error("mysql-connector-python未安装，无法从数据库读取股票")
+                return set()
+            
+            # 创建数据库连接
+            connection_config = {
+                'host': db_config.get('host', 'localhost'),
+                'port': db_config.get('port', 3306),
+                'user': db_config.get('user', 'root'),
+                'password': db_config.get('password', ''),
+                'database': db_config.get('database', 'ccass'),
+                'charset': db_config.get('connection', {}).get('charset', 'utf8mb4'),
+                'autocommit': db_config.get('connection', {}).get('autocommit', True),
+                'connection_timeout': db_config.get('connection', {}).get('connect_timeout', 30),
+            }
+            
+            connection = mysql.connector.connect(**connection_config)
+            cursor = connection.cursor()
+            
+            # 构建查询
+            table_name = db_config.get('default_table', 'issue')
+            stock_code_field = db_config.get('fields', {}).get('stock_code', 'stockCode')
+            status_field = db_config.get('fields', {}).get('status', 'status')
+            status_filter = db_config.get('status_filter', ['normal'])
+            
+            if status_filter:
+                status_conditions = ', '.join([f"'{status}'" for status in status_filter])
+                query = f"""
+                SELECT DISTINCT {stock_code_field} 
+                FROM {table_name} 
+                WHERE {status_field} IN ({status_conditions})
+                AND {stock_code_field} IS NOT NULL
+                AND {stock_code_field} != ''
+                """
+            else:
+                query = f"""
+                SELECT DISTINCT {stock_code_field} 
+                FROM {table_name} 
+                WHERE {stock_code_field} IS NOT NULL
+                AND {stock_code_field} != ''
+                """
+            
+            cursor.execute(query)
+            results = cursor.fetchall()
+            stocks = {row[0] for row in results if row[0]}
+            
+            cursor.close()
+            connection.close()
+            
+            logger.info(f"从数据库表 {table_name} 读取到 {len(stocks)} 只股票")
+            return stocks
+            
+        except Exception as e:
+            logger.error(f"从数据库读取股票代码失败: {e}")
+            return set()
 
     async def _discover_from_hkconnect(self) -> StockDiscoveryResult:
         """

@@ -39,11 +39,11 @@ download_tasks:
     enabled: false  # 启用用于测试
 
   - name: "批量股票下载任务"
-    stock_code: [ '02699']
+    stock_code: [ '02699', '00328']  # 添加测试股票00328
     start_date: "2024-01-01"
     end_date: "today"
     keywords: []
-    enabled: true  # 禁用批量任务，避免下载太多
+    enabled: true  # 启用批量任务用于测试
 
   - name: "数据库活跃股票任务"
     from_database: true              # 从数据库获取股票列表
@@ -62,6 +62,13 @@ download_tasks:
 common_keywords:
   # 关键字分类配置 - 用作主分类
   # 高优先级事件（特殊企业行为）
+  discloseable_transaction:
+    chinese: ["須予披露的交易", "须予披露的交易"]
+    english: ["Discloseable Transaction"]
+    folder_name: "须予披露交易"
+    priority: 20
+    weight: 0.2
+    
   ipo:
     chinese: ["首次公開發售", "首次公开发行", "新股上市", "IPO"]
     english: ["Initial Public Offering", "IPO", "Public Offering"]
@@ -85,7 +92,7 @@ common_keywords:
 
   # 中高优先级事件（股本变动）
   reverse_stock_split:
-    chinese: ["合股", "股份合併", "股票合併", "資本重組"]
+    chinese: ["合股", "股份合併", "股票合併", "資本重組", "股本重組", "建議股本重組"]
     english: ["Reverse Stock Split", "Share Consolidation", "Stock Consolidation", "Capital Reorganization"]
     folder_name: "合股"
     priority: 75
@@ -128,6 +135,7 @@ common_keywords:
     priority: 40
     weight: 0.6
 
+
 # 公告分类配置（现已改为纯净LONG_TEXT分类）
 # 说明：系统现在直接使用港交所官方LONG_TEXT作为分类结果，不进行任何映射
 announcement_categories:
@@ -163,6 +171,7 @@ database:
 # ClickHouse股票发现配置 - 默认启用
 stock_discovery:
   enabled: true  # 默认启用ClickHouse作为股票发现数据源
+  stock_list_source: "clickhouse"  # 股票列表来源选择：clickhouse(从ClickHouse读取) 或 custom(自定义列表)
   host: "localhost"
   port: 8124  # ClickHouse HTTP端口
   database: "hkex_analysis"
@@ -172,6 +181,15 @@ stock_discovery:
   batch_size: 1000
   connection_timeout: 30
   max_retries: 3
+  
+  # 自定义股票列表配置 (当stock_list_source为"custom"时使用)
+  custom_stocks:
+    # 可直接配置股票代码列表
+    stock_codes: ["02699",'00328' ]
+    # 或从文件读取
+    from_file: null  # 指向股票代码文件的路径，每行一个代码
+    # 从MySQL数据库读取
+    from_database: false  # 是否从数据库读取股票列表
 
 # 守护者进程配置
 daemon:
@@ -251,10 +269,55 @@ advanced:
 dual_filter:
   stock_filter_enabled: true              # 启用股票过滤（只保留监控股票列表中的股票）
   type_filter_enabled: true               # 启用类型过滤（按公告类型筛选）
-  excluded_categories:                    # 排除的公告类型列表
-    - "翌日披露報表"
-    - "展示文件"
-    - "月報表"
-    - "财务报表"
-    - "通函"
-  included_keywords: []                   # 必须包含的关键字列表（空列表表示不限制）
+  excluded_categories: []                 # 排除的公告类型列表（使用关键字模式时留空）
+  included_keywords:                      # 必须包含的关键字列表（只保留包含这些关键字的公告）
+    # IPO相关
+    - "首次公開發售"
+    - "首次公开发行"
+    - "新股上市"
+    - "IPO"
+    # 私有化/退市
+    - "私有化"
+    - "除牌"
+    - "退市"
+    # 全购/收购
+    - "全購"
+    - "全面收購"
+    - "強制性收購"
+    - "收購"
+    - "收购"
+    - "併購"
+    - "兼并收购"
+    - "須予披露的交易"
+    # 股本变动
+    - "合股"
+    - "股份合併"
+    - "股票合併"
+    - "資本重組"
+    - "股本重組"
+    - "拆股"
+    - "股份分拆"
+    - "股票分割"
+    # 融资活动
+    - "供股"
+    - "權利股"
+    - "認股權"
+    - "配股"
+    - "配售"
+    - "股份配售"
+    - "可转换"
+    - "可轉換"
+    - "轉換債券"
+    - "可換股債券"
+    # 股份回购
+    - "回購"
+    - "股份回購"
+    - "購回股份"
+    # 停牌复牌
+    - "暫停買賣"
+    - "暂停买卖"
+    - "停牌"
+    - "復牌"
+    # 须予披露交易
+    - "須予披露的交易"
+    - "须予披露的交易"

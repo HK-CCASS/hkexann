@@ -303,7 +303,7 @@ class HKEXAPIMonitor:
         """
         if not self.last_check_timestamp:
             # 首次运行，返回最近1小时的公告
-            cutoff_time = datetime.now() - timedelta(hours=1)
+            cutoff_time = datetime.now() - timedelta(hours=2)
             logger.info("首次运行，获取最近1小时的公告")
         else:
             cutoff_time = self.last_check_timestamp

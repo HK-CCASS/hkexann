@@ -27,6 +27,9 @@ import aiofiles
 import json
 import time
 
+# 导入真实下载器
+from ..downloader_integration import RealtimeDownloaderWrapper
+
 # 配置日志
 # 配置日志（如果没有已配置的handler）
 if not logging.getLogger().hasHandlers():
@@ -77,6 +80,33 @@ class CorrectedHistoricalProcessor:
         # 状态文件
         self.status_file = Path("hkexann") / ".corrected_historical_status.json"
         self.status_file.parent.mkdir(exist_ok=True)
+        
+        # 初始化真实下载器
+        try:
+            downloader_config = {
+                'downloader_integration': {
+                    'use_existing_downloader': True,
+                    'download_directory': 'hkexann',
+                    'enable_filtering': True,
+                    'timeout': 30,
+                    'preserve_original_filename': True,
+                    'create_date_subdirs': False,  # 禁用日期子目录，使用智能分类
+                    'enable_progress_bar': False,
+                    # 添加智能分类配置
+                    'enable_smart_classification': True,
+                    'common_keywords': config.get('common_keywords', {}),
+                    'announcement_categories': config.get('announcement_categories', {})
+                },
+                'max_concurrent': self.max_concurrent,
+                'requests_per_second': 2
+            }
+            # 合并原始配置以获取智能分类设置
+            downloader_config.update(config)
+            self.real_downloader = RealtimeDownloaderWrapper(downloader_config)
+            logger.info("✅ 真实下载器初始化成功")
+        except Exception as e:
+            logger.error(f"❌ 真实下载器初始化失败: {e}")
+            self.real_downloader = None
         
         # 统计信息
         self.processing_stats = {
@@ -306,14 +336,25 @@ class CorrectedHistoricalProcessor:
             # 转换为标准格式
             standardized_announcements = []
             for announcement in announcements:
+                # 🚀 修复：从raw_data中获取LONG_TEXT，这包含了真实的分类信息
+                raw_data = announcement.get('raw_data', {})
+                long_text = raw_data.get('LONG_TEXT', '')
+                
+                # 🔄 如果raw_data中没有LONG_TEXT，尝试使用智能分类
+                if not long_text:
+                    # 优先级顺序：main_category > keyword_category > sub_category
+                    long_text = (announcement.get('main_category', '') or 
+                               announcement.get('keyword_category', '') or 
+                               announcement.get('sub_category', ''))
+                
                 standardized = {
                     'STOCK_CODE': stock_code,
                     'STOCK_NAME': stock_name,
                     'TITLE': announcement.get('title', ''),
                     'DATE_TIME': announcement.get('date', ''),
                     'FILE_LINK': announcement.get('link', ''),
-                    'LONG_TEXT': announcement.get('category', ''),  # 分类信息
-                    'SHORT_TEXT': '',
+                    'LONG_TEXT': long_text,  # 🎯 修复：使用正确的分类信息
+                    'SHORT_TEXT': raw_data.get('SHORT_TEXT', ''),
                     'source': 'download_api',
                     'query_date_range': f"{start_date.strftime('%Y-%m-%d')} - {end_date.strftime('%Y-%m-%d')}"
                 }
@@ -427,27 +468,39 @@ class CorrectedHistoricalProcessor:
             Optional[Dict[str, Any]]: 下载结果
         """
         try:
-            # 这里需要集成原项目的下载功能
-            # 暂时返回模拟结果，实际实现需要调用真实的下载器
-            file_link = announcement.get('FILE_LINK', '')
-            title = announcement.get('TITLE', 'unknown')
+            # 检查真实下载器是否可用
+            if not self.real_downloader:
+                return {
+                    'success': False,
+                    'error': '真实下载器未初始化',
+                    'local_path': None,
+                    'file_size': 0,
+                    'download_time': 0
+                }
             
-            # 模拟下载过程
-            await asyncio.sleep(0.1)  # 模拟下载时间
+            # 调用真实下载器
+            download_result = await self.real_downloader.download_single_announcement(announcement)
             
-            # 实际实现应该调用真实的下载器
-            # download_result = await self.real_downloader.download_pdf(file_link)
-            
-            return {
-                'success': True,
-                'local_path': f"hkexann/simulated/{announcement.get('STOCK_CODE')}/{title[:50]}.pdf",
-                'file_size': 1024,
-                'download_time': 0.1
-            }
+            if download_result.get('success'):
+                # 转换格式以适配原有接口
+                return {
+                    'success': True,
+                    'local_path': download_result.get('file_path'),
+                    'file_size': download_result.get('file_size', 0),
+                    'download_time': download_result.get('download_time', 0)
+                }
+            else:
+                return {
+                    'success': False,
+                    'error': download_result.get('error', '下载失败'),
+                    'local_path': None,
+                    'file_size': 0,
+                    'download_time': download_result.get('download_time', 0)
+                }
             
         except Exception as e:
             logger.error(f"下载PDF失败: {e}")
-            return {'success': False, 'error': str(e)}
+            return {'success': False, 'error': str(e), 'local_path': None, 'file_size': 0, 'download_time': 0}
 
     async def _vectorize_pdf(self, pdf_path: str) -> Optional[Dict[str, Any]]:
         """

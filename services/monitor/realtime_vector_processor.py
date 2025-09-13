@@ -126,81 +126,38 @@ class RealtimeVectorProcessor:
             
             logger.info(f"开始处理PDF: {pdf_path_obj.name}")
             
-            # 手动构建文档元数据，避免从路径解析
-            from services.document_processor.pdf_parser import DocumentMetadata
+            # 直接使用现有的pipeline.process_single_document方法
+            # 这避免了重复代码，确保使用标准的文档处理流程
+            result = await self.pipeline.process_single_document(pdf_path_obj)
             
-            # 从传入的metadata中获取股票代码
-            stock_code = metadata.get('stock_code', '') if metadata else ''
-            announcement_id = metadata.get('announcement_id', '') if metadata else ''
-            source = metadata.get('source', 'realtime') if metadata else 'realtime'
-            
-            # 构建文档元数据（使用DocumentMetadata的正确字段）
-            doc_metadata = DocumentMetadata(
-                doc_id=f"{stock_code}_{announcement_id}_{int(time.time())}",
-                file_path=str(pdf_path_obj),
-                file_name=pdf_path_obj.name,
-                file_size=pdf_path_obj.stat().st_size,
-                file_hash="",  # 将在解析时计算
-                stock_code=stock_code,
-                company_name="",  # 将在解析时提取
-                document_type="公告",  # 默认类型
-                document_category="",  # 将在解析时提取
-                document_title="",  # 将在解析时提取
-                publish_date=None,  # 将在解析时提取
-                page_count=0  # 将在解析时计算
-            )
-            
-            # 添加自定义属性
-            doc_metadata.announcement_id = announcement_id
-            doc_metadata.source = source
-            
-            # 使用pipeline的组件进行处理
-            logger.info(f"解析PDF: {pdf_path_obj.name} (股票: {stock_code})")
-            
-            # parse_pdf返回(metadata, chunks)元组
-            parsed_metadata, chunks = self.pipeline.pdf_parser.parse_pdf(pdf_path_obj)
-            
-            # 更新我们的文档元数据
-            doc_metadata.file_hash = parsed_metadata.file_hash
-            doc_metadata.company_name = parsed_metadata.company_name
-            doc_metadata.document_type = parsed_metadata.document_type
-            doc_metadata.document_category = parsed_metadata.document_category
-            doc_metadata.document_title = parsed_metadata.document_title
-            doc_metadata.publish_date = parsed_metadata.publish_date
-            doc_metadata.page_count = parsed_metadata.page_count
-            
-            # 如果PDF解析器没有正确识别股票代码，使用我们提供的
-            if not doc_metadata.stock_code or doc_metadata.stock_code == 'hkexann':
-                doc_metadata.stock_code = stock_code
-            
-            if not chunks:
-                return {
-                    "success": False,
-                    "error": "PDF解析失败，未获得chunks",
-                    "file_path": pdf_path
-                }
-            
-            logger.info(f"向量化处理: {len(chunks)} chunks")
-            result = await self.pipeline.vectorizer.vectorize_document(doc_metadata, chunks)
-            
-            # 记录处理结果
-            if result.get('success', False):
-                logger.info(f"✅ 文档向量化完成: {result.get('file_name', 'Unknown')}")
-                logger.info(f"   股票代码: {result.get('stock_code', 'N/A')}")
-                logger.info(f"   公司名称: {result.get('company_name', 'N/A')}")
-                logger.info(f"   文档类型: {result.get('document_type', 'N/A')}")
-                logger.info(f"   向量化chunks: {result.get('vectorized_chunks', 0)}")
-                logger.info(f"   跳过chunks: {result.get('skipped_chunks', 0)}")
-                logger.info(f"   处理耗时: {result.get('processing_time', 0):.2f}秒")
-            else:
-                logger.error(f"❌ 文档向量化失败: {result.get('error', 'Unknown error')}")
-            
-            # 添加额外的元数据（如果提供）
-            if metadata:
+            # 如果需要修改doc_id以包含实时监听信息
+            if result.get('success', False) and metadata:
+                announcement_id = metadata.get('announcement_id', '')
+                source = metadata.get('source', 'realtime')
+                
+                # 如果有announcement_id，可以选择性地修改doc_id
+                # 但保持pipeline生成的标准格式，只添加后缀
+                if announcement_id:
+                    original_doc_id = result.get('doc_id', '')
+                    result['doc_id'] = f"{original_doc_id}_ann_{announcement_id}"
+                
+                # 添加实时监听特有的元数据
                 result.update({
                     'announcement_metadata': metadata,
-                    'processing_timestamp': result.get('processing_time', 0)
+                    'source': source
                 })
+            
+            # 记录处理结果（简化版，主要信息已在pipeline中记录）
+            if result.get('success', False):
+                logger.info(f"✅ 实时文档向量化完成: {result.get('file_name', 'Unknown')}")
+                logger.info(f"   向量化chunks: {result.get('vectorized_chunks', 0)}")
+                logger.info(f"   处理耗时: {result.get('processing_time', 0):.2f}秒")
+            else:
+                logger.error(f"❌ 实时文档向量化失败: {result.get('error', 'Unknown error')}")
+            
+            # 添加额外的元数据（如果提供） - 简化版
+            if metadata and not result.get('announcement_metadata'):
+                result['announcement_metadata'] = metadata
             
             return result
             

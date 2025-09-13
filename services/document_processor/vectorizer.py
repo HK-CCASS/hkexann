@@ -163,12 +163,14 @@ class DocumentVectorizer:
         
         # 延迟导入避免循环依赖
         self.ch_storage = None
+        self._ch_init_lock = None  # 会话初始化锁，防止并发竞争
         if enable_clickhouse:
             try:
                 from services.storage.clickhouse_pdf_storage import ClickHousePDFStorage
                 self.ch_storage = ClickHousePDFStorage()
                 # 注意：需要在async上下文中调用initialize()
                 self.ch_storage_initialized = False
+                self._ch_init_lock = asyncio.Lock()  # 初始化并发保护锁
             except ImportError:
                 logger.warning("ClickHouse存储模块不可用，禁用ClickHouse集成")
                 self.enable_clickhouse = False
@@ -328,11 +330,12 @@ class DocumentVectorizer:
             
             # 1. 存储文档元数据到ClickHouse（如果启用）
             if self.ch_storage:
-                # 确保ClickHouse存储已初始化
-                if not self.ch_storage_initialized:
-                    await self.ch_storage.initialize()
-                    self.ch_storage_initialized = True
-                    logger.info("ClickHouse存储会话已初始化")
+                # 使用锁确保ClickHouse存储线程安全初始化（修复并发竞争条件）
+                async with self._ch_init_lock:
+                    if not self.ch_storage_initialized:
+                        await self.ch_storage.initialize()
+                        self.ch_storage_initialized = True
+                        logger.info("ClickHouse存储会话已初始化（线程安全）")
                 
                 # 构建元数据字典
                 metadata_dict = {
@@ -345,17 +348,23 @@ class DocumentVectorizer:
                     'source': getattr(doc_metadata, 'source', 'vectorizer')
                 }
                 
-                metadata_stored = await self.ch_storage.store_document_metadata(
-                    doc_metadata.doc_id, 
-                    getattr(doc_metadata, 'file_path', ''),
-                    metadata_dict
-                )
+                # 带重试的存储操作，增强错误恢复能力
+                try:
+                    metadata_stored = await self.ch_storage.store_document_metadata(
+                        doc_metadata.doc_id, 
+                        getattr(doc_metadata, 'file_path', ''),
+                        metadata_dict
+                    )
+                except Exception as e:
+                    logger.error(f"❌ 文档元数据存储失败: {e}")
+                    metadata_stored = False
+                
                 # 转换DocumentChunk对象为字典
                 chunks_dict_list = []
                 for i, chunk in enumerate(chunks):
                     chunk_dict = {
-                        'id': f"{doc_metadata.doc_id}_chunk_{i}",
-                        'index': i,
+                        'id': chunk.chunk_id,  # 使用原始的chunk_id，保持格式一致性
+                        'index': chunk.chunk_index,  # 使用原始的chunk_index，保持一致性
                         'type': getattr(chunk, 'chunk_type', 'paragraph'),
                         'content': chunk.text,  # DocumentChunk使用text字段，不是content
                         'is_header': chunk.is_header,
@@ -365,8 +374,17 @@ class DocumentVectorizer:
                     }
                     chunks_dict_list.append(chunk_dict)
                 
-                chunks_stored = await self.ch_storage.store_document_chunks(doc_metadata.doc_id, chunks_dict_list)
+                try:
+                    chunks_stored = await self.ch_storage.store_document_chunks(doc_metadata.doc_id, chunks_dict_list)
+                except Exception as e:
+                    logger.error(f"❌ 文档块存储失败: {e}")
+                    chunks_stored = False
+                
                 logger.info(f"ClickHouse存储: 元数据={metadata_stored}, chunks={chunks_stored}")
+                
+                # 如果ClickHouse存储失败，记录警告但不阻止向量化继续
+                if not metadata_stored or not chunks_stored:
+                    logger.warning(f"⚠️ ClickHouse存储部分失败，向量化将继续: {doc_metadata.file_name}")
             
             # 2. 过滤掉开头语chunks（不进行向量化）
             content_chunks = [chunk for chunk in chunks if not chunk.is_header]
@@ -403,6 +421,20 @@ class DocumentVectorizer:
             
             processing_time = time.time() - start_time
             
+            # 更新文档处理状态为完成（修复pending状态问题）
+            if self.ch_storage:
+                try:
+                    await self.ch_storage.update_processing_status(
+                        doc_id=doc_metadata.doc_id,
+                        status='completed',
+                        chunk_count=len(chunks),
+                        vector_count=vectorized_count,
+                        processing_time=processing_time
+                    )
+                    logger.info(f"✅ 文档状态已更新为完成: {doc_metadata.doc_id}")
+                except Exception as e:
+                    logger.error(f"❌ 文档状态更新失败: {e}")
+            
             result = {
                 "success": True,
                 "total_chunks": len(chunks),
@@ -420,6 +452,22 @@ class DocumentVectorizer:
             
         except Exception as e:
             logger.error(f"文档向量化失败 {doc_metadata.file_name}: {e}")
+            
+            # 更新文档处理状态为失败
+            if self.ch_storage:
+                try:
+                    await self.ch_storage.update_processing_status(
+                        doc_id=doc_metadata.doc_id,
+                        status='failed',
+                        chunk_count=len(chunks),
+                        vector_count=0,
+                        processing_time=time.time() - start_time,
+                        error_message=str(e)
+                    )
+                    logger.info(f"✅ 文档状态已更新为失败: {doc_metadata.doc_id}")
+                except Exception as status_error:
+                    logger.error(f"❌ 文档失败状态更新失败: {status_error}")
+            
             return {
                 "success": False,
                 "error": str(e),

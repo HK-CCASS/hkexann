@@ -33,20 +33,25 @@ class StockDiscoveryManager:
     - split_data (拆股)
     """
     
-    def __init__(self, clickhouse_config: dict):
+    def __init__(self, config: dict):
         """
         初始化股票发现管理器
         
         Args:
-            clickhouse_config: ClickHouse连接配置
+            config: 股票发现配置，支持ClickHouse和自定义股票列表两种模式
         """
-        if not CLICKHOUSE_AVAILABLE:
-            raise ImportError("需要安装aiohttp: pip install aiohttp")
+        self.config = config
+        self.stock_list_source = config.get('stock_list_source', 'clickhouse')
         
-        self.clickhouse_config = clickhouse_config
-        self.session: Optional[aiohttp.ClientSession] = None
+        # 对于custom模式，不需要ClickHouse依赖
+        if self.stock_list_source == 'clickhouse':
+            if not CLICKHOUSE_AVAILABLE:
+                raise ImportError("需要安装aiohttp: pip install aiohttp")
+            self.session: Optional[aiohttp.ClientSession] = None
+        else:
+            self.session = None
         
-        # 财技事件表列表
+        # 财技事件表列表 (仅ClickHouse模式使用)
         self.table_names = [
             'consolidation_data',    # 合股
             'convertible_bond_data', # 可转债
@@ -58,16 +63,21 @@ class StockDiscoveryManager:
             'split_data'            # 拆股
         ]
         
-        # 从配置读取参数
-        self.host = clickhouse_config.get('host', 'localhost')
-        self.port = clickhouse_config.get('port', 8124)
-        self.database = clickhouse_config.get('database', 'hkex_analysis')
-        self.user = clickhouse_config.get('user', 'root')
-        self.password = clickhouse_config.get('password', '123456')
-        self.batch_size = clickhouse_config.get('batch_size', 1000)
-        self.connection_timeout = clickhouse_config.get('connection_timeout', 30)
-        self.query_timeout = clickhouse_config.get('query_timeout', 60)
-        self.max_retries = clickhouse_config.get('max_retries', 3)
+        # 从配置读取参数 (仅ClickHouse模式使用)
+        if self.stock_list_source == 'clickhouse':
+            self.host = config.get('host', 'localhost')
+            self.port = config.get('port', 8124)
+            self.database = config.get('database', 'hkex_analysis')
+            self.user = config.get('user', 'root')
+            self.password = config.get('password', '123456')
+            self.batch_size = config.get('batch_size', 1000)
+            self.connection_timeout = config.get('connection_timeout', 30)
+            self.query_timeout = config.get('query_timeout', 60)
+            self.max_retries = config.get('max_retries', 3)
+        
+        # 自定义股票列表配置 (仅custom模式使用)
+        elif self.stock_list_source == 'custom':
+            self.custom_stocks_config = config.get('custom_stocks', {})
         
         # 缓存
         self.current_stocks: Set[str] = set()
@@ -76,38 +86,58 @@ class StockDiscoveryManager:
         self.table_stats: Dict[str, int] = {}
         
         logger.info(f"股票发现管理器初始化完成")
-        logger.info(f"  ClickHouse: {self.host}:{self.port}/{self.database}")
-        logger.info(f"  用户: {self.user}")
-        logger.info(f"  监听表数量: {len(self.table_names)}")
-        logger.info(f"  批次大小: {self.batch_size}")
-        logger.info(f"  查询超时: {self.query_timeout}秒")
+        logger.info(f"  股票列表来源: {self.stock_list_source}")
+        
+        if self.stock_list_source == 'clickhouse':
+            logger.info(f"  ClickHouse: {self.host}:{self.port}/{self.database}")
+            logger.info(f"  用户: {self.user}")
+            logger.info(f"  监听表数量: {len(self.table_names)}")
+            logger.info(f"  批次大小: {self.batch_size}")
+            logger.info(f"  查询超时: {self.query_timeout}秒")
+        elif self.stock_list_source == 'custom':
+            custom_config = self.custom_stocks_config
+            if custom_config.get('stock_codes'):
+                logger.info(f"  自定义股票代码数量: {len(custom_config.get('stock_codes', []))}")
+            if custom_config.get('from_file'):
+                logger.info(f"  股票代码文件: {custom_config.get('from_file')}")
+            if custom_config.get('from_database'):
+                logger.info(f"  从数据库读取股票列表: 是")
     
     async def initialize(self) -> bool:
-        """初始化ClickHouse HTTP连接"""
+        """初始化股票发现管理器"""
         try:
-            # 创建HTTP会话
-            timeout = aiohttp.ClientTimeout(total=self.connection_timeout)
-            auth = aiohttp.BasicAuth(self.user, self.password)
-            
-            self.session = aiohttp.ClientSession(
-                timeout=timeout,
-                auth=auth
-            )
-            
-            # 测试连接
-            result = await self._execute_query("SELECT 1")
-            if result and len(result) > 0 and result[0] == ['1']:
-                logger.info("ClickHouse HTTP连接测试成功")
+            if self.stock_list_source == 'clickhouse':
+                # 创建HTTP会话
+                timeout = aiohttp.ClientTimeout(total=self.connection_timeout)
+                auth = aiohttp.BasicAuth(self.user, self.password)
                 
-                # 验证数据库和表
-                await self._verify_database_and_tables()
+                self.session = aiohttp.ClientSession(
+                    timeout=timeout,
+                    auth=auth
+                )
+                
+                # 测试连接
+                result = await self._execute_query("SELECT 1")
+                if result and len(result) > 0 and result[0] == ['1']:
+                    logger.info("ClickHouse HTTP连接测试成功")
+                    
+                    # 验证数据库和表
+                    await self._verify_database_and_tables()
+                    return True
+                else:
+                    logger.error("ClickHouse连接测试失败")
+                    return False
+                    
+            elif self.stock_list_source == 'custom':
+                logger.info("自定义股票列表模式，无需初始化连接")
                 return True
+            
             else:
-                logger.error("ClickHouse连接测试失败")
+                logger.error(f"不支持的股票列表来源: {self.stock_list_source}")
                 return False
                 
         except Exception as e:
-            logger.error(f"ClickHouse连接初始化失败: {e}")
+            logger.error(f"股票发现管理器初始化失败: {e}")
             return False
     
     async def _execute_query(self, query: str) -> List[List[str]]:
@@ -180,11 +210,24 @@ class StockDiscoveryManager:
     
     async def discover_all_stocks(self) -> Set[str]:
         """
-        从所有表中发现股票代码
+        发现股票代码 - 支持ClickHouse和自定义两种模式
         
         Returns:
             标准化的股票代码集合
         """
+        start_time = datetime.now()
+        all_stocks = set()
+        
+        if self.stock_list_source == 'clickhouse':
+            return await self._discover_stocks_from_clickhouse()
+        elif self.stock_list_source == 'custom':
+            return await self._discover_stocks_from_custom()
+        else:
+            logger.error(f"不支持的股票列表来源: {self.stock_list_source}")
+            return set()
+
+    async def _discover_stocks_from_clickhouse(self) -> Set[str]:
+        """从ClickHouse发现股票代码"""
         if not self.session:
             logger.error("ClickHouse会话未初始化")
             return set()
@@ -216,11 +259,124 @@ class StockDiscoveryManager:
         
         processing_time = (datetime.now() - start_time).total_seconds()
         
-        logger.info(f"股票发现完成，耗时 {processing_time:.2f}秒")
+        logger.info(f"ClickHouse股票发现完成，耗时 {processing_time:.2f}秒")
         logger.info(f"总共发现 {len(normalized_stocks)} 只不重复股票")
         logger.info(f"表统计: {self.table_stats}")
         
         return normalized_stocks
+
+    async def _discover_stocks_from_custom(self) -> Set[str]:
+        """从自定义配置发现股票代码"""
+        start_time = datetime.now()
+        all_stocks = set()
+        
+        custom_config = self.custom_stocks_config
+        logger.info("开始从自定义配置读取股票代码")
+        
+        # 1. 从直接配置的股票代码列表读取
+        if custom_config.get('stock_codes'):
+            stock_codes = custom_config.get('stock_codes', [])
+            all_stocks.update(stock_codes)
+            logger.info(f"从配置文件读取到 {len(stock_codes)} 只股票")
+        
+        # 2. 从文件读取
+        if custom_config.get('from_file'):
+            file_path = custom_config.get('from_file')
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    file_stocks = [line.strip() for line in f.readlines() if line.strip()]
+                    all_stocks.update(file_stocks)
+                    logger.info(f"从文件 {file_path} 读取到 {len(file_stocks)} 只股票")
+            except Exception as e:
+                logger.error(f"从文件 {file_path} 读取股票代码失败: {e}")
+        
+        # 3. 从数据库读取 (复用原有的数据库逻辑)
+        if custom_config.get('from_database'):
+            try:
+                db_stocks = await self._load_stocks_from_database()
+                all_stocks.update(db_stocks)
+                logger.info(f"从数据库读取到 {len(db_stocks)} 只股票")
+            except Exception as e:
+                logger.error(f"从数据库读取股票代码失败: {e}")
+        
+        # 标准化股票代码
+        normalized_stocks = self.normalize_stock_codes(all_stocks)
+        
+        # 更新缓存
+        self.previous_stocks = self.current_stocks.copy()
+        self.current_stocks = normalized_stocks
+        self.last_discovery_time = datetime.now()
+        
+        processing_time = (datetime.now() - start_time).total_seconds()
+        
+        logger.info(f"自定义股票列表发现完成，耗时 {processing_time:.2f}秒")
+        logger.info(f"总共发现 {len(normalized_stocks)} 只不重复股票")
+        
+        return normalized_stocks
+
+    async def _load_stocks_from_database(self) -> Set[str]:
+        """从MySQL数据库加载股票代码 (用于custom模式的from_database选项)"""
+        try:
+            # 需要导入数据库相关模块
+            import mysql.connector
+            from mysql.connector import pooling
+            
+            # 从主配置获取数据库配置
+            db_config = self.config.get('database', {})
+            if not db_config.get('enabled', False):
+                logger.warning("数据库未启用，跳过数据库股票读取")
+                return set()
+            
+            # 创建数据库连接
+            connection_config = {
+                'host': db_config.get('host', 'localhost'),
+                'port': db_config.get('port', 3306),
+                'user': db_config.get('user', 'root'),
+                'password': db_config.get('password', ''),
+                'database': db_config.get('database', 'ccass'),
+                'charset': db_config.get('connection', {}).get('charset', 'utf8mb4'),
+                'autocommit': db_config.get('connection', {}).get('autocommit', True),
+                'connection_timeout': db_config.get('connection', {}).get('connect_timeout', 30),
+            }
+            
+            connection = mysql.connector.connect(**connection_config)
+            cursor = connection.cursor()
+            
+            # 构建查询
+            table_name = db_config.get('default_table', 'issue')
+            stock_code_field = db_config.get('fields', {}).get('stock_code', 'stockCode')
+            status_field = db_config.get('fields', {}).get('status', 'status')
+            status_filter = db_config.get('status_filter', ['normal'])
+            
+            if status_filter:
+                status_conditions = ', '.join([f"'{status}'" for status in status_filter])
+                query = f"""
+                SELECT DISTINCT {stock_code_field} 
+                FROM {table_name} 
+                WHERE {status_field} IN ({status_conditions})
+                AND {stock_code_field} IS NOT NULL
+                AND {stock_code_field} != ''
+                """
+            else:
+                query = f"""
+                SELECT DISTINCT {stock_code_field} 
+                FROM {table_name} 
+                WHERE {stock_code_field} IS NOT NULL
+                AND {stock_code_field} != ''
+                """
+            
+            cursor.execute(query)
+            results = cursor.fetchall()
+            stocks = {row[0] for row in results if row[0]}
+            
+            cursor.close()
+            connection.close()
+            
+            return stocks
+            
+        except Exception as e:
+            logger.error(f"从数据库读取股票代码失败: {e}")
+            return set()
     
     async def _extract_stocks_from_table(self, table_name: str) -> Set[str]:
         """
