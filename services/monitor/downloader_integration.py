@@ -48,7 +48,6 @@ class RealtimeDownloaderWrapper:
 
         self.config = config
         downloader_config = config.get('downloader_integration', {})
-        print(f"下载器配置：[{downloader_config}]")
 
         # 下载器配置
         self.use_existing_downloader = downloader_config.get('use_existing_downloader', True)
@@ -402,35 +401,59 @@ class RealtimeDownloaderWrapper:
     def _format_date(self, date_time_str: str) -> str:
         """格式化日期时间字符串为 yyyy-mm-dd 格式"""
         if not date_time_str:
-            from datetime import datetime
-            return datetime.now().strftime('%Y-%m-%d')
+            # 如果没有日期，返回 "unknown-date" 而不是当前日期
+            logger.warning("公告缺少日期信息，使用 'unknown-date' 标记")
+            return "unknown-date"
 
         try:
-            # 尝试解析不同的日期时间格式
-            date_patterns = ['%Y-%m-%d %H:%M:%S',  # 2025-09-11 18:00:00
-                '%Y-%m-%d',  # 2025-09-11
-                '%d/%m/%Y%H%M',  # 11/09/20251800
-                '%d/%m/%Y %H:%M',  # 11/09/2025 18:00
-                '%Y%m%d%H%M%S',  # 20250911180000
-                '%Y%m%d',  # 20250911
+            from datetime import datetime
+
+            # 尝试解析不同的日期时间格式，按常见度排序
+            date_patterns = [
+                '%d/%m/%Y %H:%M',     # 10/09/2025 19:05 (HKEX API 最常见格式)
+                '%d/%m/%Y %H:%M:%S',  # 10/09/2025 19:05:00
+                '%Y-%m-%d %H:%M:%S',  # 2025-09-11 18:00:00
+                '%Y-%m-%d %H:%M',     # 2025-09-11 18:00
+                '%Y-%m-%d',           # 2025-09-11
+                '%d/%m/%Y',           # 11/09/2025
+                '%Y/%m/%d',           # 2025/09/11
+                '%d/%m/%Y%H%M',       # 11/09/20251800 (紧凑格式)
+                '%Y%m%d%H%M%S',       # 20250911180000
+                '%Y%m%d',             # 20250911
             ]
+
+            # 清理输入字符串（去除多余空格）
+            date_time_str = date_time_str.strip()
 
             for pattern in date_patterns:
                 try:
-                    from datetime import datetime
-                    dt = datetime.strptime(date_time_str[:len(pattern)], pattern)
-                    return dt.strftime('%Y-%m-%d')
+                    dt = datetime.strptime(date_time_str, pattern)
+                    formatted_date = dt.strftime('%Y-%m-%d')
+                    logger.debug(f"成功解析日期: {date_time_str} -> {formatted_date} (使用模式: {pattern})")
+                    return formatted_date
                 except ValueError:
-                    continue
+                    # 尝试部分匹配（处理额外的尾部字符）
+                    try:
+                        # 计算模式的最小长度
+                        min_length = len(datetime.now().strftime(pattern))
+                        if len(date_time_str) >= min_length:
+                            dt = datetime.strptime(date_time_str[:min_length], pattern)
+                            formatted_date = dt.strftime('%Y-%m-%d')
+                            logger.debug(f"成功解析日期（部分匹配）: {date_time_str} -> {formatted_date} (使用模式: {pattern})")
+                            return formatted_date
+                    except:
+                        continue
 
-            # 如果都无法解析，使用当前日期
-            from datetime import datetime
-            return datetime.now().strftime('%Y-%m-%d')
+            # 如果都无法解析，记录警告并使用特殊标记
+            logger.warning(f"无法解析日期格式: '{date_time_str}'，使用 'unparsed-date' 标记")
+            # 尝试提取可能的日期部分作为标记
+            safe_str = date_time_str[:20].replace('/', '-').replace(' ', '_').replace(':', '')
+            return f"unparsed-{safe_str}"
 
         except Exception as e:
-            logger.warning(f"日期格式化失败: {date_time_str}, 错误: {e}")
-            from datetime import datetime
-            return datetime.now().strftime('%Y-%m-%d')
+            logger.error(f"日期格式化异常: {date_time_str}, 错误: {e}")
+            # 使用特殊标记而不是当前日期
+            return "error-date"
 
     def get_downloader_stats(self) -> Dict[str, Any]:
         """获取下载器统计信息"""
