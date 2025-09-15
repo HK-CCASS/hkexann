@@ -205,6 +205,13 @@ class MilvusCollectionManager:
                     max_length=200,
                     description="文档分类"
                 ),
+
+                FieldSchema(
+                    name="document_title",
+                    dtype=DataType.VARCHAR,
+                    max_length=500,
+                    description="文档标题"
+                ),
                 
                 FieldSchema(
                     name="chunk_type",

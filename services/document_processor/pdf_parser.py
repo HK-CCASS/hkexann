@@ -293,8 +293,19 @@ class HKEXPDFParser:
                     break
 
             # 定义已知的关键字分类列表（用于识别路径结构）
+            # 包含增强监听系统的智能分类文件夹名称
             keyword_categories = {
-                'IPO', '新股', '私有化', '全购', '合股', '拆股', '供股', '配股', '配售', '可转换', '回购'
+                'IPO', '新股', '私有化', '全购', '合股', '拆股', '供股', '配股', '配售', '可转换', '回购',
+                # 增强监听系统的智能分类（与config.yaml的folder_name对应）
+                '须予披露交易', '主要交易', '非常重大的收购事项', '非常重大出售事项', '关连交易',
+                '持续关连交易', '要约', '合并', '股份回购', '供股配股',
+                '债务重组', '可转换证券', '资产重组', '分拆上市', '特别股息',
+                '业务分拆', '清算', '公司迁册', '其他企业行为',
+                # 监听模式的分类文件夹名称
+                '停牌', '复牌', '其他', '暂停买卖', '恢复买卖',
+                # 简体繁体变体
+                '须予披露的交易', '須予披露的交易', '持續關連交易', '關連交易',
+                '復牌', '暫停買賣', '恢復買賣'
             }
             
             # 定义已知的港交所官方主分类
@@ -360,9 +371,72 @@ class HKEXPDFParser:
                     document_category = official_sub_category
                 else:
                     document_category = "其他"
+
+            # 智能分类路径识别：如果没有通过HKEX标准路径找到分类，尝试识别智能分类路径
+            elif hkex_root_index == -1:
+                # 检查是否为增强监听系统的智能分类路径结构
+                # 路径格式: .../hkexann/{分类文件夹}/{股票代码}/{日期(可选)}/{文件名}.pdf
+                smart_category_detected = False
+                category_part_index = -1
                 
-            # 回退逻辑：如果没找到HKEX目录
-            else:
+                # 查找hkexann目录作为基准点（取最后一个匹配的）
+                hkexann_index = -1
+                for i, part in enumerate(parts):
+                    if part.lower() == 'hkexann':
+                        hkexann_index = i  # 保留最后找到的索引
+                
+                # 从hkexann目录开始查找分类和股票代码
+                if hkexann_index >= 0 and hkexann_index + 2 < len(parts):
+                    category_candidate = parts[hkexann_index + 1]  # hkexann后第一级
+                    stock_candidate = parts[hkexann_index + 2]     # hkexann后第二级
+                    
+                    # 检查分类文件夹是否在关键字列表中
+                    if category_candidate in keyword_categories:
+                        document_category = category_candidate
+                        smart_category_detected = True
+                        category_part_index = hkexann_index + 1
+                        logger.info(f"检测到智能分类路径(完全匹配): {category_candidate}")
+                        
+                        # 检查股票代码
+                        if stock_candidate.isdigit() and (len(stock_candidate) == 4 or len(stock_candidate) == 5):
+                            stock_code = stock_candidate
+                            logger.info(f"从智能分类路径提取股票代码: {stock_code}")
+                    else:
+                        # 检查复合分类名称（如：合股_供股）
+                        if '_' in category_candidate:
+                            sub_categories = category_candidate.split('_')
+                            found_categories = []
+                            for sub_cat in sub_categories:
+                                if sub_cat in keyword_categories:
+                                    found_categories.append(sub_cat)
+
+                            if found_categories:
+                                # 保留完整的复合分类信息
+                                if len(found_categories) == len(sub_categories):
+                                    # 所有子分类都是有效的分类关键字，保留完整复合名称
+                                    document_category = category_candidate  # 保留原始复合名称：合股_供股
+                                else:
+                                    # 部分子分类有效，使用有效的子分类重新组合
+                                    document_category = '_'.join(found_categories)
+
+                                smart_category_detected = True
+                                category_part_index = hkexann_index + 1
+                                logger.info(f"检测到复合智能分类路径: {category_candidate} -> 分类: {document_category} (包含{len(found_categories)}个子分类)")
+                                
+                                # 检查股票代码
+                                if stock_candidate.isdigit() and (len(stock_candidate) == 4 or len(stock_candidate) == 5):
+                                    stock_code = stock_candidate
+                                    logger.info(f"从智能分类路径提取股票代码: {stock_code}")
+
+                if smart_category_detected:
+                    # 智能分类路径处理完成，跳过回退逻辑
+                    pass
+                else:
+                    # 继续回退逻辑
+                    pass
+
+            # 回退逻辑：如果既没找到HKEX目录，也没找到智能分类路径
+            if hkex_root_index == -1 and document_category == "其他":
                 # 回退逻辑：寻找股票代码位置
                 stock_code_found = False
                 stock_code_index = -1
@@ -430,7 +504,8 @@ class HKEXPDFParser:
                 logger.debug(f"未能从路径提取股票代码: {file_path}")
 
             # 从文件名提取详细信息
-            # 文件名格式: 时间_股票代码_公司名称_公告文件名.pdf
+            # 监听模式文件名格式: 时间_公司名称_股票代码.HK_公告标题.pdf
+            # 历史批量文件名格式: 时间_股票代码_公司名称_公告文件名.pdf
             try:
                 filename_parts = filename.replace('.pdf', '').split('_')
 
@@ -438,6 +513,14 @@ class HKEXPDFParser:
                 extracted_stock_code = stock_code  # 默认使用目录中的股票代码
                 company_name = ""
                 document_title = ""
+                
+                # 特殊处理：如果已经从智能分类路径中获取了股票代码，
+                # 并且文件名中包含.HK格式，则调整解析逻辑
+                is_realtime_format = False
+                if smart_category_detected and any('.HK' in part for part in filename_parts):
+                    is_realtime_format = True
+                    logger.debug(f"检测到实时监听模式文件名格式: {filename}")
+                    
             except Exception as filename_error:
                 logger.error(f"文件名解析初始化异常: {filename_error}")
                 raise
@@ -451,43 +534,77 @@ class HKEXPDFParser:
                 except ValueError:
                     logger.debug(f"无法解析日期: {filename_parts[0]}")
 
-                # 查找股票代码的位置（可能在不同位置）
-                stock_code_position = -1
-                for i, part in enumerate(filename_parts):
-                    if part.isdigit() and (len(part) == 4 or len(part) == 5):
-                        stock_code_position = i
-                        extracted_stock_code = part
-                        logger.debug(f"在文件名位置{i}找到股票代码: {part}")
-                        break
-                
-                # 如果没有找到股票代码，使用传统逻辑（第2部分）
-                if stock_code_position == -1 and len(filename_parts) > 1:
-                    file_stock_code = filename_parts[1]
-                    if file_stock_code == stock_code:
-                        extracted_stock_code = file_stock_code
-                        stock_code_position = 1
-                    else:
-                        logger.debug(f"文件名股票代码 {file_stock_code} 与目录 {stock_code} 不一致")
-                        if file_stock_code.isdigit() and (len(file_stock_code) == 4 or len(file_stock_code) == 5):
+                if is_realtime_format:
+                    # 实时监听模式文件名格式: 时间_公司名称_股票代码.HK_公告标题.pdf
+                    # 示例: 2025-09-15_輝煌明天_01351.HK_交易所通告 - 短暫停牌.pdf
+                    
+                    # 查找包含.HK的部分作为股票代码
+                    stock_code_position = -1
+                    for i, part in enumerate(filename_parts):
+                        if '.HK' in part.upper():
+                            potential_code = part.split('.')[0]
+                            if potential_code.isdigit() and (len(potential_code) == 4 or len(potential_code) == 5):
+                                extracted_stock_code = potential_code
+                                stock_code_position = i
+                                logger.debug(f"实时格式：在位置{i}找到股票代码: {potential_code}")
+                                break
+                    
+                    if stock_code_position >= 1:
+                        # 实时格式: 日期_公司名称_股票代码.HK_标题
+                        # 公司名称是日期和股票代码之间的部分
+                        company_parts = filename_parts[1:stock_code_position]
+                        company_name = '_'.join(company_parts) if company_parts else ""
+                        logger.debug(f"实时格式：提取公司名称: {company_name} (从位置1到{stock_code_position})")
+                        
+                        # 文档标题是股票代码后的部分
+                        if stock_code_position + 1 < len(filename_parts):
+                            title_parts = filename_parts[stock_code_position + 1:]
+                            document_title = '_'.join(title_parts)
+                            logger.debug(f"实时格式：提取文档标题: {document_title} (从位置{stock_code_position + 1}开始)")
+                    
+                    # 如果仍然没有提取到公司名称（可能是解析失败），使用股票代码作为后备
+                    if not company_name:
+                        company_name = extracted_stock_code
+                        logger.debug(f"实时格式（后备）：使用股票代码作为公司名称: {company_name}")
+                else:
+                    # 传统格式: 时间_股票代码_公司名称_公告文件名.pdf
+                    # 查找股票代码的位置（可能在不同位置）
+                    stock_code_position = -1
+                    for i, part in enumerate(filename_parts):
+                        if part.isdigit() and (len(part) == 4 or len(part) == 5):
+                            stock_code_position = i
+                            extracted_stock_code = part
+                            logger.debug(f"在文件名位置{i}找到股票代码: {part}")
+                            break
+                    
+                    # 如果没有找到股票代码，使用传统逻辑（第2部分）
+                    if stock_code_position == -1 and len(filename_parts) > 1:
+                        file_stock_code = filename_parts[1]
+                        if file_stock_code == stock_code:
                             extracted_stock_code = file_stock_code
                             stock_code_position = 1
+                        else:
+                            logger.debug(f"文件名股票代码 {file_stock_code} 与目录 {stock_code} 不一致")
+                            if file_stock_code.isdigit() and (len(file_stock_code) == 4 or len(file_stock_code) == 5):
+                                extracted_stock_code = file_stock_code
+                                stock_code_position = 1
 
-                # 根据股票代码位置提取公司名称和文档标题
-                if stock_code_position > 0:
-                    # 股票代码前的部分（除日期）组成公司名称
-                    company_parts = filename_parts[1:stock_code_position]
-                    company_name = '_'.join(company_parts) if company_parts else ""
-                    
-                    # 股票代码后的部分组成文档标题
-                    if stock_code_position + 1 < len(filename_parts):
-                        title_parts = filename_parts[stock_code_position + 1:]
-                        document_title = '_'.join(title_parts)
-                else:
-                    # 回退到传统逻辑
-                    if len(filename_parts) > 2:
-                        company_name = filename_parts[2]
-                    if len(filename_parts) > 3:
-                        document_title = '_'.join(filename_parts[3:])
+                    # 根据股票代码位置提取公司名称和文档标题
+                    if stock_code_position > 0:
+                        # 股票代码前的部分（除日期）组成公司名称
+                        company_parts = filename_parts[1:stock_code_position]
+                        company_name = '_'.join(company_parts) if company_parts else ""
+                        
+                        # 股票代码后的部分组成文档标题
+                        if stock_code_position + 1 < len(filename_parts):
+                            title_parts = filename_parts[stock_code_position + 1:]
+                            document_title = '_'.join(title_parts)
+                    else:
+                        # 回退到传统逻辑
+                        if len(filename_parts) > 2:
+                            company_name = filename_parts[2]
+                        if len(filename_parts) > 3:
+                            document_title = '_'.join(filename_parts[3:])
 
                 # >=4分支的return语句
                 return {'stock_code': extracted_stock_code,

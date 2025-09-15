@@ -176,7 +176,30 @@ class DocumentVectorizer:
                 self.enable_clickhouse = False
         
         logger.info(f"初始化文档向量化处理器 - 集合: {self.collection_name}, 批大小: {batch_size}")
-    
+
+    def _convert_to_timestamp(self, date_obj) -> int:
+        """
+        将date或datetime对象转换为毫秒时间戳
+
+        Args:
+            date_obj: date或datetime对象
+
+        Returns:
+            int: 毫秒时间戳
+        """
+        from datetime import date, datetime
+
+        if isinstance(date_obj, datetime):
+            # datetime对象，直接使用timestamp()
+            return int(date_obj.timestamp() * 1000)
+        elif isinstance(date_obj, date):
+            # date对象，先转为datetime再获取timestamp
+            dt = datetime.combine(date_obj, datetime.min.time())
+            return int(dt.timestamp() * 1000)
+        else:
+            logger.warning(f"不支持的日期类型: {type(date_obj)}")
+            return 0
+
     def calculate_importance_score(self, chunk: DocumentChunk, doc_metadata: DocumentMetadata) -> float:
         """
         计算chunk重要性评分 (0-1) - v3新功能
@@ -337,12 +360,16 @@ class DocumentVectorizer:
                         self.ch_storage_initialized = True
                         logger.info("ClickHouse存储会话已初始化（线程安全）")
                 
-                # 构建元数据字典
+                # 构建元数据字典 - 确保字段映射与ClickHouse表结构一致
                 metadata_dict = {
                     'stock_code': getattr(doc_metadata, 'stock_code', ''),
-                    'document_type': getattr(doc_metadata, 'doc_type', 'pdf'),
-                    'published_date': getattr(doc_metadata, 'published_date', datetime.now()),
+                    'company_name': getattr(doc_metadata, 'company_name', ''),  # 公司名称
+                    'document_type': getattr(doc_metadata, 'document_type', 'pdf'),  # 修复：正确的属性名
+                    'document_category': getattr(doc_metadata, 'document_category', ''),  # 修复：正确的属性名
+                    'document_title': getattr(doc_metadata, 'document_title', ''),  # 修复：正确的属性名
+                    'published_date': getattr(doc_metadata, 'publish_date', datetime.now()),
                     'file_size': getattr(doc_metadata, 'file_size', 0),
+                    'page_count': getattr(doc_metadata, 'page_count', 0),
                     'original_filename': getattr(doc_metadata, 'file_name', ''),
                     'announcement_id': getattr(doc_metadata, 'announcement_id', ''),
                     'source': getattr(doc_metadata, 'source', 'vectorizer')
@@ -604,15 +631,14 @@ class DocumentVectorizer:
                     "chunk_type": chunk.chunk_type,
                     "text_content": chunk.text[:50000],  # v3扩展到50K字符
                     "metadata": metadata,
-                    "created_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),  # 使用字符串格式与v3 schema匹配
-                    
-                    # v3新增字段 - 使用字符串格式与Milvus schema匹配
-                    "publish_date": doc_metadata.publish_date.strftime('%Y-%m-%d') if doc_metadata.publish_date else "",
+                    "created_at": current_time,  # v3 schema使用INT64时间戳
+
+                    # v3新增字段 - 使用INT64时间戳格式与Milvus schema匹配
+                    "publish_date": self._convert_to_timestamp(doc_metadata.publish_date) if doc_metadata.publish_date else 0,
                     "page_number": chunk.page_number,
                     "file_path": doc_metadata.file_path,
                     "chunk_length": chunk.text_length,
-                    "importance_score": importance_score,
-                    "vector_id": vector_id  # 向量标识符字段
+                    "importance_score": importance_score
                 }
                 
                 insert_data.append(record)

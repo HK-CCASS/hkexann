@@ -67,8 +67,13 @@ class DocumentProcessingPipeline:
                 logger.error("无法连接到Milvus数据库")
                 return
             
-            # 使用新的create_collection_by_name方法创建指定名称的集合
-            success = manager.create_collection_by_name(self.collection_name)
+            # 根据集合名称选择创建方法
+            if self.collection_name == 'pdf_embeddings_v3' or self.collection_name == settings.pdf_embeddings_collection:
+                # 使用标准v3架构
+                success = manager.create_pdf_embeddings_collection()
+            else:
+                # 使用旧的create_collection_by_name方法（保持向后兼容）
+                success = manager.create_collection_by_name(self.collection_name)
             if success:
                 logger.info(f"✅ 已确保Milvus集合存在: {self.collection_name}")
             else:

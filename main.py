@@ -785,7 +785,18 @@ class HKEXDownloader:
                 response = self.session.get(url, timeout=self.timeout)
 
                 # 处理 JSONP 响应
-                data = response.text[9:-4]
+                response_text = response.text.strip()
+                if not response_text:
+                    raise ValueError("Empty API response")
+
+                if response_text.startswith('callback(') and response_text.endswith('});'):
+                    # 动态提取JSON部分
+                    start = response_text.find('(')
+                    end = response_text.rfind(')')
+                    data = response_text[start + 1:end]
+                else:
+                    raise ValueError(f"Unexpected response format: {response_text[:100]}...")
+
                 data_json = json.loads(data)
 
                 if 'stockInfo' not in data_json or not data_json['stockInfo']:
@@ -804,6 +815,10 @@ class HKEXDownloader:
                     time.sleep(self.request_delay)
                     continue
                 else:
+                    # 记录原始响应内容便于调试
+                    if 'response' in locals():
+                        logging.error(f"API响应状态: {response.status_code}, 响应头: {dict(response.headers)}")
+                        logging.error(f"API响应前100字符: {response.text[:100]}")
                     raise Exception(f"获取股票 {stockcode} 信息失败: {str(e)}")
         return None
 

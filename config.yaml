@@ -128,12 +128,27 @@ common_keywords:
     weight: 0.7
 
   # 较低优先级事件（股份操作）
-  share_buyback: 
+  share_buyback:
     chinese: ["回購", "股份回購", "購回股份", "購回"]
     english: ["Share Buyback", "Buyback", "Share Repurchase", "Repurchase"]
     folder_name: "回购"
     priority: 40
     weight: 0.6
+
+  # 交易暂停/复牌事件
+  trading_halt:
+    chinese: ["暫停買賣", "暂停买卖", "停牌", "短暫停牌"]
+    english: ["Trading Halt", "Suspension", "Trading Suspension"]
+    folder_name: "停牌"
+    priority: 65
+    weight: 0.8
+
+  trading_resumption:
+    chinese: ["復牌", "复牌", "恢復買賣", "恢复买卖"]
+    english: ["Trading Resumption", "Resumption"]
+    folder_name: "复牌"
+    priority: 65
+    weight: 0.8
 
 
 # 公告分类配置（现已改为纯净LONG_TEXT分类）
@@ -185,7 +200,7 @@ stock_discovery:
   # 自定义股票列表配置 (当stock_list_source为"custom"时使用)
   custom_stocks:
     # 可直接配置股票代码列表
-    stock_codes: ["02699",'00328' ]
+    stock_codes: ['00328' ]
     # 或从文件读取
     from_file: null  # 指向股票代码文件的路径，每行一个代码
     # 从MySQL数据库读取

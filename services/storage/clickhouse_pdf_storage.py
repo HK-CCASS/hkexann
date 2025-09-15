@@ -241,7 +241,7 @@ class ClickHousePDFStorage:
             logger.error(f"❌ PDF存储表创建失败: {e}")
             raise
     
-    async def store_document_metadata(self, 
+    async def store_document_metadata(self,
                                     doc_id: str,
                                     file_path: str,
                                     metadata: Dict[str, Any]) -> bool:
@@ -249,37 +249,88 @@ class ClickHousePDFStorage:
         try:
             # 提取关键信息
             stock_code = metadata.get('stock_code', '')
+            company_name = metadata.get('company_name', '')  # 新增：公司名称
             document_type = metadata.get('document_type', 'unknown')
-            published_date = metadata.get('published_date', datetime.now())
+            document_category = metadata.get('document_category', '')  # 修复：文档分类
+            document_title = metadata.get('document_title', '')  # 新增：文档标题
+            # 修复：使用正确的字段名并提供合理的默认值
+            published_date = metadata.get('published_date') or metadata.get('publish_date')
+            
+            # 如果都没有获取到日期，尝试从文件名提取日期
+            if not published_date:
+                import re
+                filename = original_filename or file_path.split('/')[-1]
+                # 尝试从文件名提取YYYY-MM-DD格式的日期
+                date_match = re.search(r'(\d{4}-\d{2}-\d{2})', filename)
+                if date_match:
+                    try:
+                        published_date = datetime.strptime(date_match.group(1), '%Y-%m-%d').date()
+                        logger.info(f"从文件名提取日期: {published_date} <- {filename}")
+                    except ValueError:
+                        published_date = datetime.now().date()
+                        logger.warning(f"文件名日期格式错误，使用当前日期: {filename}")
+                else:
+                    published_date = datetime.now().date()
+                    logger.warning(f"无法从文件名提取日期，使用当前日期: {filename}")
             file_size = metadata.get('file_size', 0)
             original_filename = metadata.get('original_filename', file_path.split('/')[-1])
-            
-            # 格式化日期 - 确保序列化兼容性
+            page_count = metadata.get('page_count', 0)
+
+            # 计算文件哈希
+            file_hash = ''
+            try:
+                import hashlib
+                from pathlib import Path
+                if Path(file_path).exists():
+                    with open(file_path, 'rb') as f:
+                        file_hash = hashlib.md5(f.read()).hexdigest()
+            except Exception as e:
+                logger.warning(f"无法计算文件哈希 {file_path}: {e}")
+
+            # 格式化日期 - 确保序列化兼容性和类型转换
             if isinstance(published_date, str):
                 try:
+                    # 尝试解析ISO格式字符串
                     published_date = datetime.fromisoformat(published_date.replace('Z', '+00:00'))
                 except:
-                    published_date = datetime.now()
-            elif not isinstance(published_date, datetime):
+                    # 如果ISO解析失败，尝试其他格式
+                    try:
+                        published_date = datetime.strptime(published_date, '%Y-%m-%d')
+                    except:
+                        published_date = datetime.now()
+            elif hasattr(published_date, 'date'):
+                # 如果是datetime对象，转换为date
+                published_date = published_date if isinstance(published_date, datetime) else datetime.combine(published_date, datetime.min.time())
+            elif not isinstance(published_date, (datetime, type(published_date).__bases__)):
                 published_date = datetime.now()
-            
+
             # 转换为日期字符串避免序列化问题（匹配Date类型）
-            published_date_str = published_date.strftime('%Y-%m-%d')
-            
+            if hasattr(published_date, 'strftime'):
+                published_date_str = published_date.strftime('%Y-%m-%d')
+            else:
+                published_date_str = str(published_date)
+
             query = """
-            INSERT INTO pdf_documents 
-            (doc_id, file_path, file_name, file_size, stock_code, document_type, 
-             publish_date, processing_status)
+            INSERT INTO pdf_documents
+            (doc_id, file_path, file_name, file_size, file_hash, page_count,
+             stock_code, company_name, document_type, document_category, document_title,
+             publish_date, processing_status, processed_at)
             VALUES
             """
-            
-            # 构建VALUES部分 - 使用修复后的日期字符串，匹配现有表结构
-            values = f"('{doc_id}', '{file_path}', '{original_filename}', {file_size}, " \
-                    f"'{stock_code}', '{document_type}', '{published_date_str}', " \
-                    f"'pending')"
-            
+
+            # 构建VALUES部分 - 包含所有字段，确保字符串转义
+            def escape_string(s):
+                if s is None:
+                    return ''
+                return str(s).replace("'", "\\'").replace("\\", "\\\\")
+
+            values = f"('{doc_id}', '{escape_string(file_path)}', '{escape_string(original_filename)}', {file_size}, " \
+                    f"'{file_hash}', {page_count}, '{escape_string(stock_code)}', '{escape_string(company_name)}', " \
+                    f"'{escape_string(document_type)}', '{escape_string(document_category)}', '{escape_string(document_title)}', " \
+                    f"'{published_date_str}', 'pending', now())"
+
             await self._execute_query(query + values)
-            
+
             logger.info(f"✅ 文档元数据已存储: {doc_id}")
             return True
             

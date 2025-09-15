@@ -82,7 +82,7 @@ class RealtimeVectorProcessor:
                 )
                 logger.info(f"实时向量化处理器初始化完成")
                 logger.info(f"  PDF目录: {self.pdf_directory}")
-                logger.info(f"  集合名称: {self.collection_name}")
+                logger.info(f"  集合名称: {collection_name}")
                 logger.info(f"  批次大小: {self.batch_size}")
                 logger.info(f"  最大并发: {self.max_concurrent}")
                 logger.info(f"  使用现有pipeline: {self.use_existing_pipeline}")

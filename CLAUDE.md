@@ -4,17 +4,27 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a comprehensive Hong Kong Stock Exchange (HKEX) announcement downloader and monitoring system. The project consists of two main components:
+This is a comprehensive Hong Kong Stock Exchange (HKEX) announcement downloader and monitoring system. The project has undergone a major architectural refactoring (v3.0) and now consists of three main components:
 
-1. **Classic Downloader** (`main.py`) - A standalone tool for downloading historical announcements
+1. **Modularized Architecture** (`legacy/`) - Clean architecture implementation of the downloader (v3.0, refactored 2025-09-13)
 2. **Enhanced Monitoring System** (`start_enhanced_monitor.py` + `services/`) - Real-time monitoring with enterprise-grade data processing
+3. **Original Downloader** (`main.py`) - Legacy standalone tool (2,100+ lines, preserved for backward compatibility)
 
 ## Architecture
 
 ### Core Components
 
-- **main.py** (2,100+ lines) - Legacy downloader with CLI interface, needs refactoring due to size
-- **services/** - Modular microservices architecture (59 Python files):
+#### New Modular Architecture (Recommended)
+- **legacy/** - Clean architecture implementation with 31 modular files:
+  - `main_cli.py` - New entry point, fully compatible with original CLI
+  - `presentation/` - CLI and configuration layer
+  - `business/` - Domain services (announcement, download, stock info, classification)
+  - `data_access/` - Repository pattern implementation
+  - `infrastructure/` - Technical implementation (database, DI, error handling, process management)
+
+#### Legacy Components
+- **main.py** (2,100+ lines) - Original monolithic implementation (preserved for compatibility)
+- **services/** - Modular microservices architecture (60 Python files):
   - `monitor/` - Real-time API monitoring (18,000+ lines across multiple files)  
   - `data_loader/` - Database integration (ClickHouse, MySQL)
   - `milvus/` - Vector database for semantic search
@@ -34,18 +44,27 @@ ClickHouse    Stock Filter    PDF Download      Text Extraction     Milvus DB
 
 ### Running the System
 
-**Classic Downloader:**
+**New Modular Architecture (Recommended):**
+```bash
+# Basic usage - fully compatible with original CLI
+python legacy/main_cli.py -s 00700 --start 2024-01-01 --end today
+
+# Async mode (recommended for performance)
+python legacy/main_cli.py -s 00700 --async
+
+# Configuration-based tasks
+python legacy/main_cli.py --check-config
+python legacy/main_cli.py --list-tasks
+python legacy/main_cli.py --run-task "task_name"
+```
+
+**Original Downloader (Backward Compatibility):**
 ```bash
 # Basic usage
 python main.py -s 00700 --start 2024-01-01 --end today
 
-# Async mode (recommended for performance)
+# All original commands still work
 python main.py -s 00700 --async
-
-# Configuration-based tasks
-python main.py --check-config
-python main.py --list-tasks
-python main.py --run-task "task_name"
 ```
 
 **Enhanced Monitoring System:**
@@ -91,6 +110,16 @@ python main.py --list-tasks
 
 # Run specific task by name
 python main.py --run-task "task_name"
+
+# Test daemon control functionality
+python daemon_control.py test
+```
+
+### Code Quality and Testing
+```bash
+# Currently no formal testing framework configured
+# When adding tests, create them in tests/ directory following pytest conventions
+# No linting or formatting tools currently configured in project
 ```
 
 ## Configuration
@@ -119,8 +148,17 @@ cp .env.template .env
 
 ### Code Structure Patterns
 
-The project follows a hybrid pattern:
-- **Legacy Pattern** - Single large file (`main.py`) with class-based organization
+The project follows multiple architectural patterns:
+
+#### New Modular Architecture (v3.0)
+- **Clean Architecture** - Separation of concerns with distinct layers
+- **Repository Pattern** - Data access abstraction in `data_access/`
+- **Service Pattern** - Business logic encapsulation in `business/services/`
+- **Dependency Injection** - IoC container in `infrastructure/dependency_injection/`
+- **Strategy Pattern** - Pluggable algorithms for filtering and processing
+
+#### Legacy Patterns
+- **Monolithic Pattern** - Single large file (`main.py`) with class-based organization
 - **Microservices Pattern** - Modular services in `services/` directory
 - **Factory Pattern** - Service initialization through managers
 - **Observer Pattern** - Event-driven monitoring system
@@ -134,11 +172,30 @@ The project follows a hybrid pattern:
 
 ### File Organization
 
-- Main executables in root directory
-- Services organized by functionality in `services/`
-- Configuration files in `config/` subdirectory  
-- Documentation in `docs/`
-- No existing test directory - create `tests/` when adding tests
+- **Root Directory**: Main executables (`main.py`, `start_enhanced_monitor.py`, `daemon_control.py`)
+- **legacy/** (NEW v3.0): Clean architecture implementation
+  - `main_cli.py`: New modular entry point
+  - `presentation/`: CLI, formatters, configuration adapters
+  - `business/services/`: Domain services (announcement, download, stock info, classification)
+  - `data_access/`: Repository pattern implementations
+  - `infrastructure/`: Technical concerns (database, DI, error handling, process management)
+- **services/**: Modular microservices (60 files across 6 major modules)
+  - `monitor/`: Core monitoring system with 20+ files
+  - `data_loader/`: Database integration utilities
+  - `document_processor/`: PDF processing pipeline
+  - `embeddings/`: SiliconFlow AI integration
+  - `milvus/`: Vector database operations
+  - `storage/`: File management utilities
+- **config/**: Configuration management (`settings.py`)
+- **docs/**: Comprehensive documentation
+  - `架构文档.md`: Complete architecture documentation
+  - `迁移指南.md`: Migration guide from main.py to modular architecture
+  - `使用说明.md`: User manual for CLI and features
+  - `开发指南.md`: Developer guide for extending the system
+  - `测试文档.md`: Testing strategy and implementation
+- **sql/**: Database schema and queries
+- **hkexann/**: Downloaded announcement storage (auto-created)
+- **tests/**: Test suite directory (create when implementing tests)
 
 ## Architecture Notes
 
@@ -165,13 +222,32 @@ The project follows a hybrid pattern:
 - **Configuration**: YAML-based configuration with environment variable substitution
 - **Scheduling**: Schedule library for daemon mode, psutil for process management
 
-### Monitoring System vs Classic Downloader
+### System Components Comparison
 
-The monitoring system (`services/monitor/`) is the core value with 6x more code than the classic downloader. It provides:
+| Component | Lines of Code | Architecture | Use Case |
+|-----------|--------------|--------------|----------|
+| **legacy/** (v3.0) | ~2,100 (modularized) | Clean Architecture | New development, maintainable code |
+| **main.py** | 2,100+ (monolithic) | Single file | Backward compatibility only |
+| **services/monitor/** | 18,000+ | Microservices | Real-time monitoring |
+
+#### Modular Architecture (legacy/) - RECOMMENDED
+The new clean architecture implementation provides:
+- **Separation of Concerns**: Each module has a single responsibility
+- **Testability**: All components can be tested in isolation
+- **Maintainability**: Changes are localized to specific modules
+- **Extensibility**: New features can be added without modifying existing code
+- **100% CLI Compatibility**: Drop-in replacement for main.py
+
+#### Monitoring System (services/monitor/)
+The monitoring system is the enterprise-grade component with:
 - Real-time API polling every 5 minutes
 - Dual-stage filtering (stocks + announcement types)
 - Enterprise health monitoring
 - Vector processing pipeline
 - Automatic error recovery
 
-When making changes, prioritize the monitoring system over the legacy downloader unless specifically working on backward compatibility.
+#### Development Priority
+1. **New Features**: Implement in `legacy/` modular architecture
+2. **Bug Fixes**: Apply to both `legacy/` and `main.py` if affecting both
+3. **Monitoring**: Continue enhancing `services/monitor/` independently
+4. **Migration**: Gradually move functionality from `main.py` to `legacy/`
