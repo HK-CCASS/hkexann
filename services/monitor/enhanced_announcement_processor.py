@@ -371,6 +371,14 @@ class EnhancedAnnouncementProcessor:
             
             # 统计处理结果
             for result in processing_results:
+                # 确保result是字典类型，防止异常对象泄漏
+                if not isinstance(result, dict):
+                    error_msg = f"意外的结果类型: {type(result).__name__} - {str(result)}"
+                    batch_stats["errors"].append(error_msg)
+                    self.stats.total_errors += 1
+                    logger.error(f"❌ {error_msg}")
+                    continue
+                
                 if result.get('download_success'):
                     batch_stats["announcements_downloaded"] += 1
                     self.stats.total_announcements_downloaded += 1
@@ -471,15 +479,17 @@ class EnhancedAnnouncementProcessor:
         # 处理异常结果
         final_results = []
         for i, result in enumerate(results):
-            if isinstance(result, Exception):
+            # 检查是否为异常（包括BaseException如CancelledError）
+            if isinstance(result, BaseException):
                 final_results.append({
                     "announcement_id": announcements[i].get('ID', 'Unknown'),
                     "stock_code": announcements[i].get('STOCK_CODE', 'Unknown'),
                     "title": "Exception",
                     "download_success": False,
                     "vectorization_success": False,
-                    "error": str(result)
+                    "error": f"{type(result).__name__}: {str(result)}"
                 })
+                logger.warning(f"⚠️ 任务异常: {announcements[i].get('STOCK_CODE', 'Unknown')} - {type(result).__name__}: {str(result)}")
             else:
                 final_results.append(result)
         
