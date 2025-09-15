@@ -1,6 +1,12 @@
 """
 增强版公告处理器 - 主控制器
 统一协调股票发现、API监听、双重过滤、下载、向量化的完整流程
+
+🔧 v2.1 重要修复：
+- 解决股票列表更新期间公告丢失的竞争条件问题
+- 使用股票列表快照机制确保批处理一致性
+- 异步股票同步避免阻塞公告处理
+- 临时过滤器状态管理防止状态污染
 """
 
 import asyncio
@@ -316,6 +322,11 @@ class EnhancedAnnouncementProcessor:
         """
         处理一批公告的完整流程
         
+        🔧 修复: 解决股票同步期间公告丢失的竞争条件问题
+        - 使用当前股票列表快照进行本次处理  
+        - 股票同步异步进行，不影响当前批次
+        - 确保无公告遗漏的并发安全机制
+        
         Returns:
             处理结果统计
         """
@@ -327,45 +338,80 @@ class EnhancedAnnouncementProcessor:
             "announcements_downloaded": 0,
             "announcements_vectorized": 0,
             "processing_time_seconds": 0,
-            "errors": []
+            "errors": [],
+            "stock_sync_triggered": False,
+            "stock_sync_completed": False
         }
         
+        # 🚀 关键修复：创建股票列表快照，避免并发修改
+        current_stock_snapshot = self.monitored_stocks.copy() if self.monitored_stocks else set()
+        logger.debug(f"📸 股票列表快照: {len(current_stock_snapshot)} 只股票")
+        
+        # 🚀 修复：并行启动股票同步任务（不阻塞当前处理）
+        stock_sync_task = None
+        if await self._should_sync_stocks():
+            logger.info("⏰ 触发定时股票同步（异步执行）")
+            stock_sync_task = asyncio.create_task(self._sync_monitored_stocks())
+            batch_stats["stock_sync_triggered"] = True
+        
         try:
-            # 1. 检查是否需要股票同步
-            if await self._should_sync_stocks():
-                logger.info("⏰ 触发定时股票同步")
-                await self._sync_monitored_stocks()
-            
-            # 2. 获取最新公告（传递监听股票列表）
+            # 1. 🚀 修复：使用快照股票列表获取公告（保证一致性）
             logger.info("📡 获取最新公告...")
-            stock_codes = list(self.monitored_stocks) if self.monitored_stocks else []
+            stock_codes = list(current_stock_snapshot) if current_stock_snapshot else []
+            logger.debug(f"📋 本次使用股票列表: {len(stock_codes)} 只股票")
+            
             announcements = await self.api_monitor.fetch_latest_announcements(stock_codes)
             batch_stats["announcements_fetched"] = len(announcements)
             self.stats.total_announcements_fetched += len(announcements)
             
             if not announcements:
                 logger.info("ℹ️  暂无新公告")
+                # 🚀 修复：即使无公告也要等待股票同步完成
+                if stock_sync_task:
+                    logger.info("⏳ 等待股票同步完成...")
+                    await stock_sync_task
+                    batch_stats["stock_sync_completed"] = True
+                    logger.info("✅ 股票同步已完成")
                 return batch_stats
             
             logger.info(f"📥 获取到 {len(announcements)} 条公告")
             
-            # 3. 双重过滤
+            # 2. 🚀 修复：创建临时过滤器使用快照股票列表（避免过滤器状态不一致）
             logger.info("🔬 执行双重过滤...")
             if not self.dual_filter:
                 logger.error("❌ 双重过滤器未初始化")
                 return batch_stats
             
-            filtered_announcements = await self.dual_filter.filter_announcements(announcements)
-            batch_stats["announcements_filtered"] = len(filtered_announcements)
-            self.stats.total_announcements_filtered += len(filtered_announcements)
+            # 🚀 关键修复：为本次批处理创建临时过滤器状态
+            # 保存当前过滤器的股票列表状态
+            original_monitored_stocks = self.dual_filter.monitored_stocks.copy()
+            
+            # 临时使用快照股票列表进行过滤
+            self.dual_filter.monitored_stocks = current_stock_snapshot
+            logger.debug(f"🔄 临时应用股票快照到过滤器: {len(current_stock_snapshot)} 只股票")
+            
+            try:
+                filtered_announcements = await self.dual_filter.filter_announcements(announcements)
+                batch_stats["announcements_filtered"] = len(filtered_announcements)
+                self.stats.total_announcements_filtered += len(filtered_announcements)
+            finally:
+                # 🚀 重要：恢复过滤器的原始状态（防止状态污染）
+                self.dual_filter.monitored_stocks = original_monitored_stocks
+                logger.debug("🔄 已恢复过滤器原始股票列表")
             
             if not filtered_announcements:
                 logger.info("ℹ️  过滤后无相关公告")
+                # 🚀 修复：等待股票同步完成
+                if stock_sync_task:
+                    logger.info("⏳ 等待股票同步完成...")
+                    await stock_sync_task
+                    batch_stats["stock_sync_completed"] = True
+                    logger.info("✅ 股票同步已完成")
                 return batch_stats
             
             logger.info(f"✅ 过滤后得到 {len(filtered_announcements)} 条相关公告")
             
-            # 4. 并发处理（下载+向量化）
+            # 3. 并发处理（下载+向量化）
             logger.info("⚡ 开始并发处理...")
             processing_results = await self._process_announcements_concurrent(filtered_announcements)
             
@@ -402,6 +448,22 @@ class EnhancedAnnouncementProcessor:
             self.consecutive_errors += 1
         
         finally:
+            # 🚀 重要修复：确保股票同步任务总是被等待完成
+            if stock_sync_task and not stock_sync_task.done():
+                try:
+                    logger.info("⏳ 等待股票同步任务完成...")
+                    await stock_sync_task
+                    batch_stats["stock_sync_completed"] = True
+                    logger.info("✅ 股票同步已完成")
+                except Exception as sync_error:
+                    error_msg = f"股票同步任务失败: {sync_error}"
+                    logger.error(f"❌ {error_msg}")
+                    batch_stats["errors"].append(error_msg)
+                    self.stats.total_errors += 1
+            elif stock_sync_task and stock_sync_task.done():
+                batch_stats["stock_sync_completed"] = True
+                logger.debug("✅ 股票同步任务已提前完成")
+            
             # 计算处理时间
             processing_time = (datetime.now() - batch_start_time).total_seconds()
             batch_stats["processing_time_seconds"] = processing_time
@@ -526,12 +588,15 @@ class EnhancedAnnouncementProcessor:
                 batch_result = await self.process_announcements_batch()
                 
                 # 记录批次结果
+                # 🚀 修复增强：更详细的批次完成日志
                 logger.info(f"📊 批次完成: "
                           f"获取 {batch_result['announcements_fetched']}, "
                           f"过滤 {batch_result['announcements_filtered']}, "
                           f"下载 {batch_result['announcements_downloaded']}, "
                           f"向量化 {batch_result['announcements_vectorized']}, "
-                          f"耗时 {batch_result['processing_time_seconds']:.1f}秒")
+                          f"耗时 {batch_result['processing_time_seconds']:.1f}秒"
+                          f"{', 股票同步✅' if batch_result.get('stock_sync_completed') else ''}"
+                          f"{', 股票同步🔄' if batch_result.get('stock_sync_triggered') and not batch_result.get('stock_sync_completed') else ''}")
                 
                 # 等待下次轮询
                 if self.is_running:
