@@ -7,21 +7,29 @@ import asyncio
 import logging
 import time
 import json
+import hashlib
 from datetime import datetime, timedelta
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Set
 
 import aiohttp
 from aiohttp import ClientTimeout
+import pytz
 
 logger = logging.getLogger(__name__)
 
 
 class HKEXAPIMonitor:
     """
-    HKEX公告API监听器
+    HKEX公告API监听器 - Bug修复版
     
     实时轮询港交所公告API，获取最新公告数据。
     支持时间戳缓存避免、新公告检测、错误重试等功能。
+    
+    🔧 主要Bug修复：
+    1. 时间戳更新时机问题 - 只有处理成功后才更新
+    2. 重复公告检测 - 基于ID缓存避免重复处理
+    3. 时区处理问题 - 统一使用香港时区
+    4. 文档一致性 - 修正时间窗口描述
     """
     
     def __init__(self, config: dict):
@@ -34,7 +42,16 @@ class HKEXAPIMonitor:
         # 实时监听API (与下载API不同)
         self.base_url = "https://www1.hkexnews.hk/ncms/json/eds/lcisehk1relsdc_1.json"
         self.config = config
-        self.last_check_timestamp: Optional[datetime] = None
+        
+        # 🔧 修复：时区和时间戳管理
+        self.hk_tz = pytz.timezone('Asia/Hong_Kong')
+        self.last_successful_check: Optional[datetime] = None  # 成功处理完成的时间
+        self.last_poll_attempt: Optional[datetime] = None      # 最后轮询尝试时间
+        
+        # 🔧 修复：添加公告ID缓存避免重复
+        self.processed_announcement_ids: Set[str] = set()
+        self.max_id_cache_size = 1000  # 最大缓存ID数量
+        
         self.session: Optional[aiohttp.ClientSession] = None
         
         # 从配置读取参数
@@ -60,11 +77,13 @@ class HKEXAPIMonitor:
             'Pragma': 'no-cache'
         }
         
-        logger.info(f"HKEX API监听器初始化完成")
+        logger.info(f"HKEX API监听器(修复版)初始化完成")
         logger.info(f"  API URL: {self.base_url}")
         logger.info(f"  检查间隔: {self.check_interval}秒")
         logger.info(f"  超时时间: {self.timeout}秒")
         logger.info(f"  重试次数: {self.retry_attempts}")
+        logger.info(f"  时区: {self.hk_tz}")
+        logger.info(f"  ID缓存大小: {self.max_id_cache_size}")
     
     def _convert_news_format(self, raw_news_list: List[Dict]) -> List[Dict[str, Any]]:
         """
@@ -152,14 +171,16 @@ class HKEXAPIMonitor:
     
     async def fetch_latest_announcements(self, stock_codes: List[str] = None) -> List[Dict[str, Any]]:
         """
-        获取最新公告数据 (实时监听API)
+        获取最新公告数据 (实时监听API) - 修复版
         
         Args:
             stock_codes: 监听的股票代码列表，用于后续过滤（监听API不需要指定股票）
             
         Returns:
-            包含新公告的列表
+            包含新公告的列表（带有_announcement_id和_parsed_datetime字段）
         """
+        # 🔧 修复：记录轮询尝试时间
+        self.last_poll_attempt = datetime.now(self.hk_tz)
         for attempt in range(self.retry_attempts):
             try:
                 # 生成时间戳参数避免缓存
@@ -291,65 +312,162 @@ class HKEXAPIMonitor:
         
         return announcements
     
+    def _parse_hkex_datetime(self, dt_str: str) -> Optional[datetime]:
+        """
+        🔧 修复：准确解析HKEX时间并转换为香港时区
+        
+        Args:
+            dt_str: HKEX API时间字符串
+            
+        Returns:
+            香港时区的datetime对象
+        """
+        if not dt_str:
+            return None
+            
+        try:
+            # 主要格式：'10/09/2025 20:58'
+            try:
+                naive_dt = datetime.strptime(dt_str, '%d/%m/%Y %H:%M')
+            except ValueError:
+                try:
+                    naive_dt = datetime.strptime(dt_str, '%d/%m/%Y %H:%M:%S')
+                except ValueError:
+                    try:
+                        naive_dt = datetime.strptime(dt_str, '%Y-%m-%d %H:%M:%S')
+                    except ValueError:
+                        logger.debug(f"无法解析时间格式: {dt_str}")
+                        return None
+            
+            # 🔧 修复：假设HKEX时间为香港时区
+            hk_dt = self.hk_tz.localize(naive_dt)
+            return hk_dt
+            
+        except Exception as e:
+            logger.error(f"解析HKEX时间失败: {dt_str}, 错误: {e}")
+            return None
+    
+    def _get_announcement_id(self, announcement: Dict) -> str:
+        """
+        🔧 修复：生成公告唯一ID
+        
+        Args:
+            announcement: 公告数据
+            
+        Returns:
+            唯一公告ID
+        """
+        # 优先使用API提供的newsId
+        if 'NEWS_ID' in announcement and announcement['NEWS_ID']:
+            return f"news_{announcement['NEWS_ID']}"
+        
+        # 备选方案：基于股票代码+标题+时间生成
+        stock_code = announcement.get('STOCK_CODE', 'unknown')
+        title = announcement.get('TITLE', 'untitled')
+        datetime_str = announcement.get('DATE_TIME', 'no_time')
+        
+        # 创建确定性哈希
+        content = f"{stock_code}_{title}_{datetime_str}"
+        hash_id = hashlib.md5(content.encode('utf-8')).hexdigest()[:12]
+        return f"hash_{hash_id}"
+    
     def filter_new_announcements(self, announcements: List[Dict]) -> List[Dict]:
         """
-        过滤出新公告（相对于上次检查）
+        🔧 修复版：过滤新公告
+        
+        主要改进：
+        1. 正确的时区处理
+        2. 基于ID的重复检测
+        3. 更精确的时间比较
+        4. 不立即更新时间戳（需要手动调用mark_announcements_processed）
         
         Args:
             announcements: 原始公告列表
             
         Returns:
-            新公告列表
+            新公告列表（去重且未处理过的）
         """
-        if not self.last_check_timestamp:
-            # 首次运行，返回最近1小时的公告
-            cutoff_time = datetime.now() - timedelta(hours=2)
-            logger.info("首次运行，获取最近1小时的公告")
+        # 🔧 修复：获取香港时区的当前时间
+        now_hk = datetime.now(self.hk_tz)
+        
+        if not self.last_successful_check:
+            # 🔧 修复：首次运行获取最近2小时的公告（与注释一致）
+            cutoff_time = now_hk - timedelta(hours=2)
+            logger.info("首次运行，获取最近2小时的公告")
         else:
-            cutoff_time = self.last_check_timestamp
-            logger.debug(f"使用上次检查时间作为过滤基准: {cutoff_time}")
+            # 🔧 修复：使用上次成功处理的时间作为基准
+            cutoff_time = self.last_successful_check
+            logger.debug(f"使用上次成功处理时间作为过滤基准: {cutoff_time}")
         
         new_announcements = []
+        skipped_ids = []
+        
         for announcement in announcements:
             try:
-                # 解析公告时间：'09/01/2025 18:30:00'
+                # 解析公告时间
                 dt_str = announcement.get('DATE_TIME', '')
-                if not dt_str:
-                    logger.warning(f"公告缺少时间信息: {announcement.get('TITLE', 'Unknown')}")
+                hk_dt = self._parse_hkex_datetime(dt_str)
+                
+                if not hk_dt:
+                    logger.warning(f"公告时间解析失败: {announcement.get('TITLE', 'Unknown')}")
                     continue
                 
-                # 尝试解析时间格式
-                try:
-                    # HKEX API时间格式：10/09/2025 20:58
-                    dt = datetime.strptime(dt_str, '%d/%m/%Y %H:%M')
-                except ValueError:
-                    # 尝试其他可能的时间格式
-                    try:
-                        dt = datetime.strptime(dt_str, '%Y-%m-%d %H:%M:%S')
-                    except ValueError:
-                        try:
-                            # 尝试带秒的格式
-                            dt = datetime.strptime(dt_str, '%d/%m/%Y %H:%M:%S')
-                        except ValueError:
-                            try:
-                                # 尝试ISO格式
-                                dt = datetime.fromisoformat(dt_str.replace('Z', '+00:00'))
-                            except ValueError:
-                                logger.debug(f"无法解析公告时间格式: {dt_str}")
-                                continue
+                # 🔧 修复：时间比较（都是香港时区）
+                if hk_dt <= cutoff_time:
+                    continue  # 跳过旧公告
                 
-                if dt > cutoff_time:
-                    new_announcements.append(announcement)
-                    logger.debug(f"新公告: {announcement.get('STOCK_CODE', 'N/A')} - {announcement.get('TITLE', 'Unknown')[:50]}...")
+                # 🔧 修复：检查公告ID重复
+                announcement_id = self._get_announcement_id(announcement)
+                if announcement_id in self.processed_announcement_ids:
+                    skipped_ids.append(announcement_id)
+                    continue  # 跳过已处理的公告
+                
+                # 添加到新公告列表
+                announcement['_announcement_id'] = announcement_id
+                announcement['_parsed_datetime'] = hk_dt
+                new_announcements.append(announcement)
+                
+                logger.debug(f"新公告: {announcement.get('STOCK_CODE', 'N/A')} - "
+                           f"{announcement.get('TITLE', 'Unknown')[:50]}... "
+                           f"[{announcement_id}]")
                     
             except Exception as e:
-                logger.error(f"处理公告时间时出错: {e}, 公告: {announcement}")
+                logger.error(f"处理公告时出错: {e}, 公告: {announcement}")
                 continue
         
-        # 更新检查时间戳
-        self.last_check_timestamp = datetime.now()
+        if skipped_ids:
+            logger.debug(f"跳过 {len(skipped_ids)} 个重复公告ID")
         
+        logger.info(f"过滤结果: {len(announcements)} -> {len(new_announcements)} 条新公告")
         return new_announcements
+    
+    def mark_announcements_processed(self, announcement_ids: List[str], success_time: datetime = None):
+        """
+        🔧 新增：标记公告为已处理
+        
+        Args:
+            announcement_ids: 已处理的公告ID列表
+            success_time: 处理成功的时间（香港时区）
+        """
+        if not success_time:
+            success_time = datetime.now(self.hk_tz)
+        
+        # 添加到已处理ID集合
+        for aid in announcement_ids:
+            self.processed_announcement_ids.add(aid)
+        
+        # 🔧 修复：只有在处理成功后才更新时间戳
+        self.last_successful_check = success_time
+        
+        # 清理过大的ID缓存
+        if len(self.processed_announcement_ids) > self.max_id_cache_size:
+            # 保留最近的一半
+            ids_list = list(self.processed_announcement_ids)
+            keep_count = self.max_id_cache_size // 2
+            self.processed_announcement_ids = set(ids_list[-keep_count:])
+            logger.debug(f"清理ID缓存，保留 {keep_count} 个ID")
+        
+        logger.info(f"✅ 标记 {len(announcement_ids)} 个公告为已处理，更新成功时间戳: {success_time}")
     
     async def start_monitoring(self, on_new_announcements_callback):
         """
@@ -411,14 +529,18 @@ class HKEXAPIMonitor:
             logger.info("HKEX API监听已停止")
     
     def get_status(self) -> Dict[str, Any]:
-        """获取监听器状态"""
+        """获取监听器状态 - 修复版"""
         return {
             "is_initialized": self.session is not None,
-            "last_check_time": self.last_check_timestamp.isoformat() if self.last_check_timestamp else None,
+            "last_successful_check": self.last_successful_check.isoformat() if self.last_successful_check else None,
+            "last_poll_attempt": self.last_poll_attempt.isoformat() if self.last_poll_attempt else None,
+            "processed_announcement_count": len(self.processed_announcement_ids),
             "check_interval": self.check_interval,
             "timeout": self.timeout,
             "retry_attempts": self.retry_attempts,
-            "api_url": self.base_url
+            "timezone": str(self.hk_tz),
+            "api_url": self.base_url,
+            "version": "fixed"
         }
 
 

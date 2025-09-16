@@ -416,7 +416,9 @@ class EnhancedAnnouncementProcessor:
             processing_results = await self._process_announcements_concurrent(filtered_announcements)
             
             # 统计处理结果
-            for result in processing_results:
+            processed_announcement_ids = []
+            
+            for i, result in enumerate(processing_results):
                 # 确保result是字典类型，防止异常对象泄漏
                 if not isinstance(result, dict):
                     error_msg = f"意外的结果类型: {type(result).__name__} - {str(result)}"
@@ -432,10 +434,24 @@ class EnhancedAnnouncementProcessor:
                 if result.get('vectorization_success'):
                     batch_stats["announcements_vectorized"] += 1
                     self.stats.total_announcements_vectorized += 1
+                    
+                    # 🔧 修复：收集成功处理的公告ID
+                    if i < len(filtered_announcements):
+                        ann_id = filtered_announcements[i].get('_announcement_id')
+                        if ann_id:
+                            processed_announcement_ids.append(ann_id)
                 
                 if result.get('error'):
                     batch_stats["errors"].append(result['error'])
                     self.stats.total_errors += 1
+            
+            # 🔧 修复：标记成功处理的公告
+            if processed_announcement_ids and hasattr(self.api_monitor, 'mark_announcements_processed'):
+                try:
+                    self.api_monitor.mark_announcements_processed(processed_announcement_ids)
+                    logger.info(f"✅ 已标记 {len(processed_announcement_ids)} 个公告为已处理")
+                except Exception as mark_error:
+                    logger.warning(f"⚠️ 标记公告处理状态失败: {mark_error}")
             
             # 重置连续错误计数
             self.consecutive_errors = 0
