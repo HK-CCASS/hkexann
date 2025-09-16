@@ -391,9 +391,9 @@ class HKEXAPIMonitor:
         now_hk = datetime.now(self.hk_tz)
         
         if not self.last_successful_check:
-            # 🔧 修复：首次运行获取最近2小时的公告（与注释一致）
-            cutoff_time = now_hk - timedelta(hours=2)
-            logger.info("首次运行，获取最近2小时的公告")
+            # 🔧 修复：首次运行获取最近3小时的公告（与注释一致）
+            cutoff_time = now_hk - timedelta(hours=24)
+            logger.info("首次运行，获取最近3小时的公告")
         else:
             # 🔧 修复：使用上次成功处理的时间作为基准
             cutoff_time = self.last_successful_check

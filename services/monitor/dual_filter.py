@@ -86,6 +86,15 @@ class DualAnnouncementFilter:
         if self.stock_filter_enabled:
             stock_filtered = await self.filter_by_stock_list(raw_announcements)
             logger.info(f"阶段1-股票过滤后剩余: {len(stock_filtered)} 条公告")
+            # logger.info(f"剩余的股票： {stock_filtered}")
+            # logger.info("=====================================================================")
+            # for data in stock_filtered:
+            #     STOCK_CODE = data.get('STOCK_CODE', 'N/A')
+            #     STOCK_NAME = data.get('STOCK_NAME', 'N/A')
+            #     LONG_TEXT = data.get('LONG_TEXT', 'N/A')
+            #     TITLE = data.get('TITLE', 'N/A').replace('\n', '')
+            #     print(f"{STOCK_CODE} {STOCK_NAME} {LONG_TEXT}  {TITLE}")
+            # logger.info("=====================================================================  \r\n")
         else:
             stock_filtered = raw_announcements
             logger.info("股票过滤已禁用，跳过阶段1")
@@ -94,6 +103,15 @@ class DualAnnouncementFilter:
         if self.type_filter_enabled:
             type_filtered = await self.filter_by_announcement_type(stock_filtered)
             logger.info(f"阶段2-类型过滤后剩余: {len(type_filtered)} 条公告")
+            # logger.info(f"剩余的公告：  {type_filtered}")
+            # logger.info("=====================================================================")
+            # for data in type_filtered:
+            #     STOCK_CODE = data.get('STOCK_CODE', 'N/A')
+            #     STOCK_NAME = data.get('STOCK_NAME', 'N/A')
+            #     LONG_TEXT = data.get('LONG_TEXT', 'N/A')
+            #     TITLE = data.get('TITLE', 'N/A').replace('\n', '')
+            #     print(f"{STOCK_CODE} {STOCK_NAME} {LONG_TEXT}  {TITLE}")
+            # logger.info("=====================================================================  \r\n")
         else:
             type_filtered = stock_filtered
             logger.info("类型过滤已禁用，跳过阶段2")
@@ -164,57 +182,36 @@ class DualAnnouncementFilter:
     async def filter_by_announcement_type(self, announcements: List[Dict]) -> List[Dict]:
         """
         第二阶段：按公告类型过滤
-        
+
         Args:
             announcements: 股票过滤后的公告列表
-            
+
         Returns:
             类型过滤后的公告列表
         """
         filtered = []
         category_stats = {}  # 统计各类别的公告数量
-        
+
         for announcement in announcements:
             try:
-                announcement_type = announcement.get('LONG_TEXT', '')
-                
-                # 🚀 增强：如果LONG_TEXT为空，尝试使用智能分类
-                if not announcement_type:
-                    title = announcement.get('TITLE', '')
-                    if title:
-                        # 使用智能分类器来确定类型
-                        announcement_type = self._classify_by_title(title)
-                        announcement['LONG_TEXT_INFERRED'] = announcement_type  # 标记为推断得出
-                
+                # 第一步：获取或推断公告类型
+                announcement_type = self._get_or_infer_announcement_type(announcement)
+
                 # 统计
                 category_stats[announcement_type] = category_stats.get(announcement_type, 0) + 1
-                
-                # 检查排除类别
+
+                # 第二步：检查排除类别
                 if self._is_excluded_category(announcement_type):
                     logger.debug(f"❌ 公告类型 '{announcement_type}' 在排除列表中，跳过")
                     continue
-                
-                # 检查包含关键字（如果配置了）
-                if self.included_keywords:
-                    if self._contains_included_keywords(announcement_type, announcement):
-                        filtered.append(announcement)
-                        logger.debug(f"✅ 公告 '{announcement.get('TITLE', '')[:30]}...' 包含关键字，保留")
-                    else:
-                        logger.debug(f"❌ 公告 '{announcement.get('TITLE', '')[:30]}...' 不包含关键字，跳过")
+
+                # 第三步：应用过滤策略
+                if self._should_keep_announcement(announcement_type, announcement):
+                    filtered.append(announcement)
+                    logger.debug(f"✅ 公告类型 '{announcement_type}' 通过过滤，保留")
                 else:
-                    # 🚀 增强：对于空字符串，我们现在可以进行智能判断
-                    if announcement_type == '':
-                        # 空字符串表示无法分类，我们可以选择性保留
-                        if self._should_keep_unclassified(announcement):
-                            filtered.append(announcement)
-                            logger.debug(f"✅ 未分类公告通过策略检查，保留: {announcement.get('TITLE', '')[:30]}...")
-                        else:
-                            logger.debug(f"❌ 未分类公告被策略过滤: {announcement.get('TITLE', '')[:30]}...")
-                    else:
-                        # 有分类的公告，保留所有未排除的
-                        filtered.append(announcement)
-                        logger.debug(f"✅ 公告类型 '{announcement_type}' 通过过滤，保留")
-                    
+                    logger.debug(f"❌ 公告不符合过滤条件，跳过")
+
             except Exception as e:
                 logger.error(f"处理公告类型时出错: {e}, 公告: {announcement}")
                 continue
@@ -240,26 +237,69 @@ class DualAnnouncementFilter:
         return filtered
     
     def _is_excluded_category(self, announcement_type: str) -> bool:
-        """检查公告类型是否在排除列表中"""
+        """
+        检查公告类型是否在排除列表中
+        
+        Args:
+            announcement_type: 公告类型字符串
+            
+        Returns:
+            bool: 是否属于排除类别
+        """
+        if not self.excluded_categories:
+            return False  # 如果没有配置排除类别，默认不排除
+        
+        # 标准化处理
+        announcement_type = announcement_type or ""
+        announcement_type_lower = announcement_type.lower().strip()
+        
         for excluded in self.excluded_categories:
-            if excluded in announcement_type:
+            excluded_lower = excluded.lower().strip()
+            if excluded_lower and excluded_lower in announcement_type_lower:
+                logger.debug(f"❌ 公告类型 '{announcement_type}' 匹配排除类别 '{excluded}'")
                 return True
+        
         return False
     
     def _contains_included_keywords(self, announcement_type: str, announcement: Dict = None) -> bool:
-        """检查公告类型或标题是否包含必需的关键字"""
-        # 检查 LONG_TEXT
+        """
+        检查公告类型或标题是否包含必需的关键字
+        
+        Args:
+            announcement_type: 公告类型字符串
+            announcement: 完整公告数据（可选）
+            
+        Returns:
+            bool: 是否包含任何必需的关键字
+        """
+        if not self.included_keywords:
+            return True  # 如果没有配置关键字，默认通过
+        
+        # 标准化处理，避免空字符串和大小写问题
+        announcement_type = announcement_type or ""
+        announcement_type_lower = announcement_type.lower().strip()
+        
+        # 检查 LONG_TEXT (公告类型)
         for keyword in self.included_keywords:
-            if keyword in announcement_type:
+            keyword_lower = keyword.lower().strip()
+            if keyword_lower and keyword_lower in announcement_type_lower:
+                logger.debug(f"✅ LONG_TEXT 匹配关键字 '{keyword}': {announcement_type}")
                 return True
         
         # 如果提供了完整公告，也检查标题
         if announcement:
-            title = announcement.get('TITLE', '')
+            title = announcement.get('TITLE', '') or ""
+            title_lower = title.lower().strip()
+            
             for keyword in self.included_keywords:
-                if keyword in title:
+                keyword_lower = keyword.lower().strip()
+                if keyword_lower and keyword_lower in title_lower:
+                    logger.debug(f"✅ TITLE 匹配关键字 '{keyword}': {title[:50]}...")
                     return True
         
+        # 记录不匹配的情况，便于调试
+        logger.debug(f"❌ 未匹配任何关键字 - 类型: '{announcement_type}', "
+                    f"标题: '{announcement.get('TITLE', '')[:30] if announcement else 'N/A'}...'")
         return False
     
     def extract_stock_code(self, announcement: Dict) -> str:
@@ -345,36 +385,90 @@ class DualAnnouncementFilter:
         # 默认分类
         return "通告及告示"
     
+    def _get_or_infer_announcement_type(self, announcement: Dict) -> str:
+        """
+        获取或推断公告类型
+
+        Args:
+            announcement: 公告数据
+
+        Returns:
+            公告类型字符串
+        """
+        announcement_type = announcement.get('LONG_TEXT', '')
+
+        # 如果LONG_TEXT为空，尝试使用智能分类
+        if not announcement_type:
+            title = announcement.get('TITLE', '')
+            if title:
+                # 使用智能分类器来确定类型
+                announcement_type = self._classify_by_title(title)
+                announcement['LONG_TEXT_INFERRED'] = announcement_type  # 标记为推断得出
+
+        return announcement_type
+
+    def _should_keep_announcement(self, announcement_type: str, announcement: Dict) -> bool:
+        """
+        统一的过滤策略判断
+
+        Args:
+            announcement_type: 公告类型
+            announcement: 公告数据
+
+        Returns:
+            是否保留该公告
+        """
+        # 如果配置了关键字，必须包含关键字才保留
+        if self.included_keywords:
+            if self._contains_included_keywords(announcement_type, announcement):
+                logger.info(f"✅ 公告 '{announcement.get('TITLE', '')[:30]}...' 包含关键字，保留")
+                return True
+            else:
+                logger.info(f"❌ 公告 '{announcement.get('TITLE', '')[:30]}...' 不包含关键字，跳过")
+                return False
+
+        # 未配置关键字时的处理逻辑
+        if announcement_type == '':
+            # 空字符串表示无法分类，使用特殊策略判断
+            should_keep = self._should_keep_unclassified(announcement)
+            if should_keep:
+                logger.info(f"✅ 未分类公告通过策略检查，保留: {announcement.get('TITLE', '')[:30]}...")
+            else:
+                logger.info(f"❌ 未分类公告被策略过滤: {announcement.get('TITLE', '')[:30]}...")
+            return should_keep
+        else:
+            # 有分类的公告，保留所有未排除的
+            return True
+
     def _should_keep_unclassified(self, announcement: Dict) -> bool:
         """
         判断是否保留未分类的公告
-        
+
         Args:
             announcement: 公告信息
-            
+
         Returns:
             是否保留该公告
         """
         title = announcement.get('TITLE', '')
-        
+
         # 排除明显的无关内容
         exclusion_patterns = [
-            "月報表", "翌日披露", "展示文件", "通函"
+            "月報表", "翌日披露", "展示文件", "通函","股东大会"
         ]
-        
+
         for pattern in exclusion_patterns:
             if pattern in title:
                 return False
-        
+
         # 包含重要关键字的保留
         important_patterns = [
-            "建議", "公告", "收購", "供股", "配股", "合股", "業績", "委任", "辞任", 
-            "暫停", "復牌", "停牌", "分派", "派息"
+            "建議", "公告", "收購", "供股", "配股", "合股", '根據一般性授權發行股份','根據一般','授權'
         ]
-        
+
         for pattern in important_patterns:
             if pattern in title:
                 return True
-        
+
         # 其他情况默认保留（可以根据需要调整）
         return True
