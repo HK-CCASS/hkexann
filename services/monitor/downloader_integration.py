@@ -390,9 +390,9 @@ class RealtimeDownloaderWrapper:
         # 提取日期部分并格式化为 yyyy-mm-dd
         date_formatted = self._format_date(date_time)
 
-        # 清理文件名中的特殊字符
-        stock_name_clean = re.sub(r'[<>:"/\\|?*\s]', '_', stock_name)[:30]  # 限制长度
-        title_clean = re.sub(r'[<>:"/\\|?*]', '_', title)[:80]  # 限制长度
+        # 清理文件名中的特殊字符，包括换行符和控制字符
+        stock_name_clean = re.sub(r'[<>:"/\\|?*\s\r\n\t\v\f]', '_', stock_name)[:30]  # 限制长度
+        title_clean = re.sub(r'[<>:"/\\|?*\r\n\t\v\f]', '_', title)[:80]  # 限制长度，保留普通空格
 
         # 新格式: yyyy-mm-dd_股票名称_股票代码_公告标题.pdf
         filename = f"{date_formatted}_{stock_name_clean}_{stock_code}_{title_clean}.pdf"

@@ -302,9 +302,9 @@ class AsyncHKEXDownloader(HKEXDownloader):
             else:
                 savepath = base_path
 
-            # 清理公司名称和公告标题中的特殊字符
-            clean_stock_name = re.sub(r'[<>:"/\\|?*]', '-', stock_name)
-            clean_title = re.sub(r'[<>:"/\\|?*]', '-', ann['title'])
+            # 清理公司名称和公告标题中的特殊字符，包括换行符和控制字符
+            clean_stock_name = re.sub(r'[<>:"/\\|?*\r\n\t\v\f]', '-', stock_name)
+            clean_title = re.sub(r'[<>:"/\\|?*\r\n\t\v\f]', '-', ann['title'])
 
             # 新的文件命名格式：时间——股票代码——公司名称-公告名称
             filename = f"{ann['date']}_{stockcode}_{clean_stock_name}_{clean_title[:filename_length]}.pdf"

@@ -458,8 +458,8 @@ class AnnouncementMonitor:
         """生成下载文件名"""
         import re
         
-        # 清理标题作为文件名
-        safe_title = re.sub(r'[<>:"/\\|?*]', '_', ann.title)
+        # 清理标题作为文件名，包括换行符和控制字符
+        safe_title = re.sub(r'[<>:"/\\|?*\r\n\t\v\f]', '_', ann.title)
         safe_title = safe_title[:100]  # 限制长度
         
         # 添加股票代码和时间戳
