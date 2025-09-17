@@ -128,7 +128,19 @@ def load_config(config_path: str = "config.yaml") -> Dict[str, Any]:
 
             # 错误处理配置
             'error_handling': {'max_consecutive_errors': 10, 'error_backoff_seconds': 60,
-                               'enable_error_recovery': True}}
+                               'enable_error_recovery': True},
+
+            # 🆕 新增股票历史处理配置
+            'new_stock_historical_processing': config.get('new_stock_historical_processing', {
+                'enabled': True,
+                'days': 3,
+                'batch_size': 5,
+                'max_concurrent': 2,
+                'timeout_minutes': 10,
+                'max_retries': 2,
+                'enable_filtering': True,
+                'auto_start': True
+            })}
 
         # 合并原始配置
         enhanced_config.update(config)

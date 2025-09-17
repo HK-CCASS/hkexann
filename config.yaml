@@ -349,3 +349,14 @@ dual_filter:
     # 须予披露交易
 #    - "須予披露的交易"
 #    - "须予披露的交易"
+
+# 🆕 新增股票历史处理配置
+new_stock_historical_processing:
+  enabled: true                    # 启用新增股票历史处理
+  days: 3                         # 历史公告查询天数
+  batch_size: 5                   # 单批处理股票数量  
+  max_concurrent: 2               # 最大并发处理数
+  timeout_minutes: 10             # 单批处理超时时间
+  max_retries: 2                  # 最大重试次数
+  enable_filtering: true          # 启用公告过滤
+  auto_start: true               # 检测到新股票时自动启动

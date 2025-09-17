@@ -50,6 +50,15 @@ class ProcessingStats:
     monitored_stocks_count: int = 0
     stock_sync_count: int = 0
     
+    # 🆕 新增股票历史处理统计
+    new_stocks_historical_processed: int = 0
+    new_stocks_historical_announcements: int = 0
+    new_stocks_historical_downloads: int = 0
+    new_stocks_historical_vectorized: int = 0
+    new_stocks_historical_errors: int = 0
+    last_new_stock_historical_processing_time: Optional[datetime] = None
+    total_new_stock_historical_processing_time: float = 0.0
+    
     def get_summary(self) -> Dict[str, Any]:
         """获取统计摘要"""
         uptime = datetime.now() - self.session_start_time
@@ -72,7 +81,21 @@ class ProcessingStats:
                 max(self.total_announcements_filtered, 1) * 100
             ),
             "last_sync_time": self.last_sync_time.isoformat() if self.last_sync_time else None,
-            "last_processing_time": self.last_processing_time.isoformat() if self.last_processing_time else None
+            "last_processing_time": self.last_processing_time.isoformat() if self.last_processing_time else None,
+            
+            # 🆕 新增股票历史处理统计
+            "new_stock_historical": {
+                "processed_stocks": self.new_stocks_historical_processed,
+                "total_announcements": self.new_stocks_historical_announcements,
+                "total_downloads": self.new_stocks_historical_downloads,
+                "total_vectorized": self.new_stocks_historical_vectorized,
+                "total_errors": self.new_stocks_historical_errors,
+                "last_processing_time": self.last_new_stock_historical_processing_time.isoformat() if self.last_new_stock_historical_processing_time else None,
+                "total_processing_duration": self.total_new_stock_historical_processing_time,
+                "avg_processing_time_per_stock": (
+                    self.total_new_stock_historical_processing_time / max(self.new_stocks_historical_processed, 1)
+                )
+            }
         }
 
 
@@ -120,11 +143,18 @@ class EnhancedAnnouncementProcessor:
         self.error_backoff_seconds = error_config.get('error_backoff_seconds', 60)
         self.enable_error_recovery = error_config.get('enable_error_recovery', True)
         
+        # 🆕 新增股票历史处理配置
+        self.new_stock_historical_config = config.get('new_stock_historical_processing', {})
+        self.enable_new_stock_historical = self.new_stock_historical_config.get('enabled', True)
+        
         # 状态变量
         self.is_running = False
         self.consecutive_errors = 0
         self.last_stock_sync = None
         self.monitored_stocks: Set[str] = set()
+        
+        # 🆕 新增股票历史处理器实例（初始化为None，在initialize方法中创建）
+        self.new_stock_historical_processor: Optional[CorrectedHistoricalProcessor] = None
         
         # 初始化所有组件
         self._initialize_components()
@@ -264,12 +294,49 @@ class EnhancedAnnouncementProcessor:
             else:
                 logger.info("ℹ️ 非首次运行，跳过历史公告处理")
             
+            # 🆕 7. 初始化新增股票历史处理器
+            if self.enable_new_stock_historical:
+                logger.info("📚 初始化新增股票历史处理器...")
+                await self._initialize_new_stock_historical_processor()
+            else:
+                logger.info("ℹ️ 新增股票历史处理功能已禁用")
+            
             logger.info(f"✅ 系统初始化完成！监控 {len(self.monitored_stocks)} 只股票")
             return True
             
         except Exception as e:
             logger.error(f"❌ 系统初始化失败: {e}")
             return False
+    
+    async def _initialize_new_stock_historical_processor(self):
+        """初始化新增股票历史处理器"""
+        try:
+            # 配置历史处理器
+            historical_config = {
+                'historical_days': self.new_stock_historical_config.get('days', 3),
+                'stock_batch_size': self.new_stock_historical_config.get('batch_size', 5),
+                'max_concurrent_historical': self.new_stock_historical_config.get('max_concurrent', 2),
+                'api_delay': 0.5,
+                'common_keywords': self.config.get('common_keywords', {}),
+                'announcement_categories': self.config.get('announcement_categories', {})
+            }
+            
+            # 创建处理器实例
+            self.new_stock_historical_processor = CorrectedHistoricalProcessor(
+                hkex_downloader=self.downloader.get_underlying_downloader(),
+                dual_filter=self.dual_filter,
+                vectorizer=self.vector_processor,
+                monitored_stocks=set(),  # 初始为空，动态设置
+                config=historical_config
+            )
+            
+            # CorrectedHistoricalProcessor不需要单独的初始化方法
+            
+            logger.info("✅ 新增股票历史处理器初始化完成")
+            
+        except Exception as e:
+            logger.error(f"❌ 新增股票历史处理器初始化失败: {e}")
+            raise
     
     async def _sync_monitored_stocks(self):
         """同步监控股票列表"""
@@ -280,6 +347,7 @@ class EnhancedAnnouncementProcessor:
             new_stocks = await self.stock_discovery.discover_all_stocks()
             
             # 检测变化
+            changes = None
             if self.monitored_stocks:
                 changes = await self.stock_discovery.detect_stock_changes()
                 new_count = len(changes['new_stocks'])
@@ -302,10 +370,185 @@ class EnhancedAnnouncementProcessor:
             
             logger.info(f"✅ 股票同步完成: {len(new_stocks)} 只股票")
             
+            # 🆕 新增: 处理新增股票的历史公告
+            if (changes and changes['new_stocks'] and 
+                self.enable_new_stock_historical and 
+                self.new_stock_historical_processor):
+                
+                logger.info(f"🕐 发现 {len(changes['new_stocks'])} 只新增股票，启动历史处理")
+                
+                # 异步处理，不阻塞主流程
+                asyncio.create_task(
+                    self._process_new_stocks_with_historical_processor(changes['new_stocks'])
+                )
+            
         except Exception as e:
             logger.error(f"❌ 股票同步失败: {e}")
             self.stats.total_errors += 1
             raise
+    
+    async def _process_new_stocks_with_historical_processor(self, new_stocks: Set[str]):
+        """使用现有历史处理器处理新增股票"""
+        max_retries = self.new_stock_historical_config.get('max_retries', 2)
+        timeout_minutes = self.new_stock_historical_config.get('timeout_minutes', 10)
+        
+        for attempt in range(max_retries + 1):
+            try:
+                if attempt > 0:
+                    logger.info(f"🔄 第 {attempt + 1} 次尝试处理新增股票历史公告")
+                
+                logger.info(f"📊 开始为 {len(new_stocks)} 只新增股票处理历史公告")
+                start_time = datetime.now()
+                
+                # 验证处理器状态
+                if not self.new_stock_historical_processor:
+                    raise RuntimeError("新增股票历史处理器未初始化")
+                
+                # 备份原始监控股票列表
+                original_stocks = self.new_stock_historical_processor.monitored_stocks.copy()
+                
+                try:
+                    # 设置为新增股票列表
+                    self.new_stock_historical_processor.monitored_stocks = new_stocks
+                    logger.info(f"🎯 设置处理目标: {sorted(list(new_stocks))}")
+                    
+                    # 使用超时控制调用历史处理逻辑
+                    result = await asyncio.wait_for(
+                        self.new_stock_historical_processor.process_historical_announcements(),
+                        timeout=timeout_minutes * 60
+                    )
+                    
+                    # 更新统计信息
+                    processing_time = (datetime.now() - start_time).total_seconds()
+                    self._update_new_stock_historical_stats(new_stocks, result, processing_time)
+                    
+                    logger.info(f"✅ 新增股票历史处理完成，耗时 {processing_time:.1f}秒")
+                    logger.info(f"📈 处理结果: {result}")
+                    
+                    # 成功完成，跳出重试循环
+                    break
+                    
+                finally:
+                    # 恢复原始股票列表
+                    self.new_stock_historical_processor.monitored_stocks = original_stocks
+                    logger.debug("🔄 已恢复原始股票列表")
+                
+            except asyncio.TimeoutError:
+                error_msg = f"新增股票历史处理超时 ({timeout_minutes}分钟)"
+                logger.error(f"⏰ {error_msg}")
+                self.stats.new_stocks_historical_errors += 1
+                
+                if attempt < max_retries:
+                    wait_time = (attempt + 1) * 30  # 30, 60秒递增等待
+                    logger.info(f"⏳ 等待 {wait_time} 秒后重试...")
+                    await asyncio.sleep(wait_time)
+                else:
+                    logger.error(f"❌ 达到最大重试次数，放弃处理")
+                
+            except Exception as e:
+                error_msg = f"新增股票历史处理失败: {type(e).__name__}: {e}"
+                logger.error(f"❌ {error_msg}")
+                logger.debug(f"📍 错误详情:", exc_info=True)
+                self.stats.new_stocks_historical_errors += 1
+                
+                # 判断是否应该重试
+                if self._should_retry_historical_processing(e) and attempt < max_retries:
+                    wait_time = (attempt + 1) * 30
+                    logger.info(f"🔄 错误可重试，等待 {wait_time} 秒后重试...")
+                    await asyncio.sleep(wait_time)
+                else:
+                    if attempt >= max_retries:
+                        logger.error(f"❌ 达到最大重试次数，放弃处理")
+                    else:
+                        logger.error(f"❌ 错误不可重试，直接失败")
+                    break
+
+    def _should_retry_historical_processing(self, error: Exception) -> bool:
+        """判断历史处理错误是否应该重试"""
+        # 网络相关错误可以重试
+        retryable_errors = [
+            'ConnectionError', 'TimeoutError', 'ClientConnectorError',
+            'SSLError', 'ClientResponseError', 'ClientConnectorCertificateError'
+        ]
+        
+        error_type = type(error).__name__
+        should_retry = error_type in retryable_errors
+        
+        logger.debug(f"🔍 错误类型 {error_type} {'可重试' if should_retry else '不可重试'}")
+        return should_retry
+
+    def _update_new_stock_historical_stats(self, new_stocks: Set[str], result: Dict[str, Any], processing_time: float):
+        """更新新增股票历史处理统计"""
+        self.stats.new_stocks_historical_processed += len(new_stocks)
+        self.stats.new_stocks_historical_announcements += result.get('relevant_announcements', 0)
+        self.stats.new_stocks_historical_downloads += result.get('successfully_downloaded', 0)
+        self.stats.new_stocks_historical_vectorized += result.get('successfully_vectorized', 0)
+        self.stats.last_new_stock_historical_processing_time = datetime.now()
+        self.stats.total_new_stock_historical_processing_time += processing_time
+        
+        # 🆕 性能统计
+        avg_time_per_stock = processing_time / len(new_stocks) if new_stocks else 0
+        logger.info(f"📊 性能统计: 平均每只股票处理时间 {avg_time_per_stock:.2f}秒")
+        
+        # 资源使用监控
+        try:
+            import psutil
+            process = psutil.Process()
+            memory_usage = process.memory_info().rss / 1024 / 1024  # MB
+            cpu_percent = process.cpu_percent()
+            logger.info(f"💻 资源使用: 内存 {memory_usage:.1f}MB, CPU {cpu_percent:.1f}%")
+        except ImportError:
+            logger.debug("psutil不可用，跳过资源监控")
+        except Exception as e:
+            logger.debug(f"资源监控失败: {e}")
+
+    def get_new_stock_historical_performance_metrics(self) -> Dict[str, Any]:
+        """获取新增股票历史处理性能指标"""
+        if self.stats.new_stocks_historical_processed == 0:
+            return {
+                "status": "no_data",
+                "message": "尚无新增股票历史处理数据"
+            }
+        
+        avg_processing_time = (
+            self.stats.total_new_stock_historical_processing_time / 
+            self.stats.new_stocks_historical_processed
+        )
+        
+        success_rate = (
+            (self.stats.new_stocks_historical_processed - self.stats.new_stocks_historical_errors) /
+            max(self.stats.new_stocks_historical_processed, 1) * 100
+        )
+        
+        return {
+            "status": "active",
+            "performance_metrics": {
+                "total_processed_stocks": self.stats.new_stocks_historical_processed,
+                "total_processing_time_seconds": self.stats.total_new_stock_historical_processing_time,
+                "average_time_per_stock": avg_processing_time,
+                "total_announcements": self.stats.new_stocks_historical_announcements,
+                "total_downloads": self.stats.new_stocks_historical_downloads,
+                "total_vectorized": self.stats.new_stocks_historical_vectorized,
+                "error_count": self.stats.new_stocks_historical_errors,
+                "success_rate_percent": success_rate,
+                "last_processing_time": self.stats.last_new_stock_historical_processing_time.isoformat() 
+                    if self.stats.last_new_stock_historical_processing_time else None
+            },
+            "efficiency_metrics": {
+                "announcements_per_stock": (
+                    self.stats.new_stocks_historical_announcements / 
+                    max(self.stats.new_stocks_historical_processed, 1)
+                ),
+                "download_success_rate": (
+                    self.stats.new_stocks_historical_downloads / 
+                    max(self.stats.new_stocks_historical_announcements, 1) * 100
+                ) if self.stats.new_stocks_historical_announcements > 0 else 0,
+                "vectorization_success_rate": (
+                    self.stats.new_stocks_historical_vectorized / 
+                    max(self.stats.new_stocks_historical_downloads, 1) * 100
+                ) if self.stats.new_stocks_historical_downloads > 0 else 0
+            }
+        }
     
     async def _should_sync_stocks(self) -> bool:
         """检查是否需要同步股票"""
@@ -656,16 +899,25 @@ class EnhancedAnnouncementProcessor:
                 "api_poll_interval_seconds": self.api_poll_interval,
                 "max_concurrent_processing": self.max_concurrent_processing,
                 "enable_auto_stock_sync": self.enable_auto_stock_sync,
-                "enable_continuous_monitoring": self.enable_continuous_monitoring
+                "enable_continuous_monitoring": self.enable_continuous_monitoring,
+                # 🆕 新增股票历史处理配置状态
+                "new_stock_historical_enabled": self.enable_new_stock_historical,
+                "new_stock_historical_days": self.new_stock_historical_config.get('days', 3),
+                "new_stock_historical_max_concurrent": self.new_stock_historical_config.get('max_concurrent', 2),
+                "new_stock_historical_max_retries": self.new_stock_historical_config.get('max_retries', 2)
             },
             "component_status": {
                 "stock_discovery": bool(self.stock_discovery),
                 "api_monitor": bool(self.api_monitor),
                 "dual_filter": bool(self.dual_filter),
                 "downloader": bool(self.downloader),
-                "vector_processor": bool(self.vector_processor)
+                "vector_processor": bool(self.vector_processor),
+                # 🆕 新增股票历史处理器状态
+                "new_stock_historical_processor": bool(self.new_stock_historical_processor)
             },
-            "statistics": self.stats.get_summary()
+            "statistics": self.stats.get_summary(),
+            # 🆕 新增股票历史处理性能指标
+            "new_stock_historical_performance": self.get_new_stock_historical_performance_metrics()
         }
     
     async def close(self):
@@ -689,6 +941,15 @@ class EnhancedAnnouncementProcessor:
                 if underlying_downloader:
                     await underlying_downloader.close()
                     logger.debug("✅ 下载器HTTP客户端已关闭")
+            
+            # 🆕 关闭新增股票历史处理器
+            if self.new_stock_historical_processor:
+                try:
+                    # CorrectedHistoricalProcessor不需要特殊清理
+                    self.new_stock_historical_processor = None
+                    logger.debug("✅ 新增股票历史处理器已关闭")
+                except Exception as e:
+                    logger.warning(f"⚠️ 关闭新增股票历史处理器时出错: {e}")
             
             # 关闭嵌入服务的HTTP客户端
             try:
