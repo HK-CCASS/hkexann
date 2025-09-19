@@ -21,16 +21,21 @@ import sys
 root_logger = logging.getLogger()
 root_logger.handlers.clear()
 
-# 强制重新配置
+# 强制重新配置 - 修复Windows编码问题
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler('enhanced_monitor.log')
+        logging.FileHandler('enhanced_monitor.log', encoding='utf-8')
     ],
     force=True  # Python 3.8+ 支持，强制重新配置
 )
+
+# 设置控制台输出编码（Windows兼容性）
+if sys.platform.startswith('win'):
+    import os
+    os.environ['PYTHONIOENCODING'] = 'utf-8'
 
 logger = logging.getLogger(__name__)
 
@@ -115,14 +120,14 @@ def load_config(config_path: str = "config.yaml") -> Dict[str, Any]:
                                           'max_concurrent': 5},
 
             # 调度配置
-            'scheduler': {'stock_sync_interval_hours': 0.5,  # 半小时同步一次股票列表
-                          'api_poll_interval_seconds': 60,  # 1分钟检查一次API
+            'scheduler': {'stock_sync_interval_hours': 0.1,  # 半小时同步一次股票列表
+                          'api_poll_interval_seconds': 120,  # 1分钟检查一次API
                           'max_concurrent_processing': 5, 'enable_auto_stock_sync': True,
                           'enable_continuous_monitoring': True},
 
             # 历史数据处理配置
             'historical_processing': {'historical_days': 365,  # 常规模式历史天数
-                                      'first_run_historical_days':180,  # 首次运行历史天数，快速启动
+                                      'first_run_historical_days':45,  # 首次运行历史天数，快速启动
                                       'stock_batch_size': 10, 'date_chunk_days': 30, 'max_concurrent_historical': 3,
                                       'api_delay': 2.0},
 
@@ -139,17 +144,20 @@ def load_config(config_path: str = "config.yaml") -> Dict[str, Any]:
                 'timeout_minutes': 10,
                 'max_retries': 2,
                 'enable_filtering': True,
-                'auto_start': True
+                'auto_start': True,
+                # 🔧 修复：添加强制历史补充选项
+                'force_first_run_historical': True,  # 强制为首次发现的所有股票补充历史
+                'force_all_stocks_historical': False  # 强制为所有股票补充历史（调试用）
             })}
 
         # 合并原始配置
         enhanced_config.update(config)
 
-        logger.info("✅ 配置文件加载成功")
+        logger.info("配置文件加载成功")
         return enhanced_config
 
     except Exception as e:
-        logger.error(f"❌ 配置文件加载失败: {e}")
+        logger.error(f"配置文件加载失败: {e}")
         sys.exit(1)
 
 
@@ -158,44 +166,44 @@ async def start_enhanced_monitor(config: Dict[str, Any]):
     try:
 
 
-        logger.info("🚀 启动HKEX增强公告监听系统...")
+        logger.info("启动HKEX增强公告监听系统...")
         logger.info("=" * 60)
 
         # 创建处理器
         processor = EnhancedAnnouncementProcessor(config)
 
         # 初始化系统
-        logger.info("⚙️ 正在初始化系统...")
+        logger.info("正在初始化系统...")
         if not await processor.initialize():
-            logger.error("❌ 系统初始化失败")
+            logger.error("系统初始化失败")
             return
 
-        logger.info("✅ 系统初始化完成！")
+        logger.info("系统初始化完成！")
 
         # 显示系统状态
         status = processor.get_system_status()
-        logger.info("📊 系统状态:")
-        logger.info(f"  • 监听股票数量: {status.get('system_info', {}).get('monitored_stocks_count', 0)}")
-        logger.info(f"  • API轮询间隔: {status.get('configuration', {}).get('api_poll_interval_seconds', 0)}秒")
-        logger.info(f"  • 股票同步间隔: {status.get('configuration', {}).get('stock_sync_interval_hours', 0):.1f}小时")
-        logger.info(f"  • 最大并发处理: {status.get('configuration', {}).get('max_concurrent_processing', 0)}")
+        logger.info("系统状态:")
+        logger.info(f"  监听股票数量: {status.get('system_info', {}).get('monitored_stocks_count', 0)}")
+        logger.info(f"  API轮询间隔: {status.get('configuration', {}).get('api_poll_interval_seconds', 0)}秒")
+        logger.info(f"  股票同步间隔: {status.get('configuration', {}).get('stock_sync_interval_hours', 0):.1f}小时")
+        logger.info(f"  最大并发处理: {status.get('configuration', {}).get('max_concurrent_processing', 0)}")
 
         # 启动持续监听
-        logger.info("🔄 开始持续监听...")
+        logger.info("开始持续监听...")
         logger.info("=" * 60)
 
         await processor.run_continuous_monitoring()
 
     except KeyboardInterrupt:
-        logger.info("⏹️ 用户中断，正在停止系统...")
+        logger.info("用户中断，正在停止系统...")
     except Exception as e:
-        logger.error(f"❌ 系统运行失败: {e}")
+        logger.error(f"系统运行失败: {e}")
         import traceback
         traceback.print_exc()
     finally:
         if 'processor' in locals():
             await processor.close()
-        logger.info("👋 系统已停止")
+        logger.info("系统已停止")
 
 
 def show_help():
@@ -241,7 +249,7 @@ def show_help():
 
 async def run_test_mode():
     """运行测试模式"""
-    logger.info("🧪 === 测试模式 ===")
+    logger.info("=== 测试模式 ===")
 
     monitor = None
     try:
@@ -249,16 +257,16 @@ async def run_test_mode():
         from services.monitor.dual_filter import DualAnnouncementFilter
 
         # 测试API连接
-        logger.info("📡 测试API连接...")
+        logger.info("测试API连接...")
         api_config = {'base_url': 'https://www1.hkexnews.hk/ncms/json/eds/lcisehk1relsdc_1.json', 'poll_interval': 300,
                       'timeout': 30, 'max_retries': 3}
 
         monitor = HKEXAPIMonitor(api_config)
         announcements = await monitor.fetch_latest_announcements()
-        logger.info(f"✅ API测试成功，获取到 {len(announcements)} 条公告")
+        logger.info(f"API测试成功，获取到 {len(announcements)} 条公告")
 
         # 测试过滤功能
-        logger.info("🔍 测试过滤功能...")
+        logger.info("测试过滤功能...")
         filter_config = {'realtime_monitoring': {
             'filtering': {'stock_filter_enabled': True, 'type_filter_enabled': True,
                           'excluded_categories': ['翌日披露報表', '展示文件'], 'included_keywords': []}}}
@@ -271,19 +279,19 @@ async def run_test_mode():
                      {'STOCK_CODE': '00001.HK', 'TITLE': '排除公告', 'LONG_TEXT': '翌日披露報表'}]
 
         filtered = await dual_filter.filter_announcements(mock_data)
-        logger.info(f"✅ 过滤测试成功: {len(mock_data)} → {len(filtered)} 条")
+        logger.info(f"过滤测试成功: {len(mock_data)} -> {len(filtered)} 条")
 
-        logger.info("🎉 所有测试通过！系统运行正常")
+        logger.info("所有测试通过！系统运行正常")
 
     except Exception as e:
-        logger.error(f"❌ 测试失败: {e}")
+        logger.error(f"测试失败: {e}")
         import traceback
         traceback.print_exc()
     finally:
         # 确保关闭所有HTTP连接
         if monitor:
             await monitor.close()
-            logger.debug("✅ API监听器已关闭")
+            logger.debug("API监听器已关闭")
 
 
 def main():
@@ -304,8 +312,8 @@ def main():
 
     # 检查配置文件
     if not Path(args.config).exists():
-        logger.error(f"❌ 配置文件不存在: {args.config}")
-        logger.info("💡 请确保config.yaml文件存在，或使用 -c 指定其他配置文件")
+        logger.error(f"配置文件不存在: {args.config}")
+        logger.info("请确保config.yaml文件存在，或使用 -c 指定其他配置文件")
         sys.exit(1)
 
     # 加载配置并启动系统

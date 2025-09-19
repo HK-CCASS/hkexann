@@ -31,8 +31,8 @@ class DualAnnouncementFilter:
         self.monitored_stocks = set(monitored_stocks)  # 创建副本避免外部修改
         self.config = config
         
-        # 从配置读取过滤条件
-        filtering_config = config.get('realtime_monitoring', {}).get('filtering', {})
+        # 从配置读取过滤条件 - 修复配置路径
+        filtering_config = config.get('dual_filter', {})
         self.stock_filter_enabled = filtering_config.get('stock_filter_enabled', True)
         self.type_filter_enabled = filtering_config.get('type_filter_enabled', True)
         self.excluded_categories = filtering_config.get('excluded_categories', [])
@@ -122,6 +122,24 @@ class DualAnnouncementFilter:
         if original_count > 0:
             filter_rate = (original_count - final_count) / original_count * 100
             logger.info(f"双重过滤完成，过滤率: {filter_rate:.1f}% ({original_count} -> {final_count})")
+        
+        # 🔥 新增：输出过滤后的详细公告信息
+        if type_filtered:
+            logger.info(f"📋 过滤后保留的 {len(type_filtered)} 条公告详情:")
+            for i, announcement in enumerate(type_filtered, 1):
+                stock_code = announcement.get('STOCK_CODE', 'N/A')
+                title = announcement.get('TITLE', 'Unknown Title')
+                announcement_type = announcement.get('LONG_TEXT', 'Unknown Type')
+                date_time = announcement.get('DATE_TIME', 'N/A')
+                
+                # 截断过长的标题和类型
+                title_short = title[:50] + "..." if len(title) > 50 else title
+                type_short = announcement_type[:40] + "..." if len(announcement_type) > 40 else announcement_type
+                
+                logger.info(f"  {i:2d}. [{stock_code}] {title_short}")
+                logger.info(f"      📅 {date_time} | 📂 {type_short}")
+        else:
+            logger.info("📋 过滤后无公告保留")
         
         return type_filtered
     

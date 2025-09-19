@@ -153,6 +153,10 @@ class EnhancedAnnouncementProcessor:
         self.last_stock_sync = None
         self.monitored_stocks: Set[str] = set()
         
+        # 🔧 修复：添加股票变化检测所需的状态
+        self._previous_stocks: Optional[Set[str]] = None  # 用于检测股票变化的基线
+        self._is_first_stock_sync = True  # 标记是否为首次股票同步
+        
         # 🆕 新增股票历史处理器实例（初始化为None，在initialize方法中创建）
         self.new_stock_historical_processor: Optional[CorrectedHistoricalProcessor] = None
         
@@ -338,6 +342,75 @@ class EnhancedAnnouncementProcessor:
             logger.error(f"❌ 新增股票历史处理器初始化失败: {e}")
             raise
     
+    async def _detect_stock_changes_manually(self, current_stocks: Set[str]) -> Dict[str, Any]:
+        """
+        🔧 修复：手动检测股票变化
+        
+        因为stock_discovery.py中的StockDiscoveryManager没有detect_stock_changes方法，
+        我们在这里实现股票变化检测逻辑
+        
+        Args:
+            current_stocks: 当前股票列表
+            
+        Returns:
+            Dict[str, Any]: 变化检测结果
+        """
+        from datetime import datetime
+        
+        # 初始化变化检测结果
+        changes = {
+            'success': True,
+            'timestamp': datetime.now(),
+            'current_count': len(current_stocks),
+            'has_changes': False,
+            'new_stocks': set(),
+            'removed_stocks': set(),
+            'is_first_sync': self._is_first_stock_sync
+        }
+        
+        # 🔧 关键修复：正确处理首次同步和后续变化检测
+        if self._is_first_stock_sync:
+            # 首次同步：将所有股票都视为新增
+            logger.info("🆕 首次股票同步，将所有股票视为新增")
+            changes['new_stocks'] = current_stocks.copy()
+            changes['has_changes'] = bool(current_stocks)
+            changes['previous_count'] = 0
+            
+            # 标记不再是首次同步
+            self._is_first_stock_sync = False
+            
+            logger.info(f"✅ 首次同步发现 {len(current_stocks)} 只股票，全部标记为新增")
+            
+        elif self._previous_stocks is not None:
+            # 后续同步：比较变化
+            previous_stocks = self._previous_stocks
+            
+            changes['new_stocks'] = current_stocks - previous_stocks
+            changes['removed_stocks'] = previous_stocks - current_stocks
+            changes['has_changes'] = bool(changes['new_stocks'] or changes['removed_stocks'])
+            changes['previous_count'] = len(previous_stocks)
+            
+            if changes['has_changes']:
+                logger.info(f"📈 检测到股票变化: 新增 {len(changes['new_stocks'])} 只，移除 {len(changes['removed_stocks'])} 只")
+                if changes['new_stocks']:
+                    logger.info(f"   📝 新增股票: {sorted(list(changes['new_stocks']))}")
+                if changes['removed_stocks']:
+                    logger.info(f"   📝 移除股票: {sorted(list(changes['removed_stocks']))}")
+            else:
+                logger.debug("📊 股票列表无变化")
+        else:
+            # 异常情况：非首次但没有_previous_stocks
+            logger.warning("⚠️ 检测到异常状态：非首次同步但缺少历史基线，重置为首次同步")
+            self._is_first_stock_sync = True
+            changes['new_stocks'] = current_stocks.copy()
+            changes['has_changes'] = bool(current_stocks)
+            changes['previous_count'] = 0
+        
+        # 保存当前股票列表供下次比较
+        self._previous_stocks = current_stocks.copy()
+        
+        return changes
+    
     async def _sync_monitored_stocks(self):
         """同步监控股票列表"""
         try:
@@ -349,9 +422,19 @@ class EnhancedAnnouncementProcessor:
             # 检测变化
             changes = None
             if self.monitored_stocks:
-                changes = await self.stock_discovery.detect_stock_changes()
+                # 🔧 修复：使用discover_all_stocks和手动比较来检测变化
+                # 因为stock_discovery.py中的StockDiscoveryManager没有detect_stock_changes方法
+                logger.debug(f"🔍 检测股票变化: 当前 {len(new_stocks)} 只，历史 {len(self.monitored_stocks)} 只")
+                changes = await self._detect_stock_changes_manually(new_stocks)
                 new_count = len(changes['new_stocks'])
                 removed_count = len(changes['removed_stocks'])
+                
+                # 🔧 调试日志：详细记录变化检测结果
+                logger.debug(f"📊 变化检测结果:")
+                logger.debug(f"   - 是否首次同步: {changes.get('is_first_sync', False)}")
+                logger.debug(f"   - 有变化: {changes['has_changes']}")
+                logger.debug(f"   - 新增数量: {new_count}")
+                logger.debug(f"   - 移除数量: {removed_count}")
                 
                 if new_count > 0 or removed_count > 0:
                     logger.info(f"📈 股票列表变化: 新增 {new_count}, 移除 {removed_count}")
@@ -371,16 +454,55 @@ class EnhancedAnnouncementProcessor:
             logger.info(f"✅ 股票同步完成: {len(new_stocks)} 只股票")
             
             # 🆕 新增: 处理新增股票的历史公告
-            if (changes and changes['new_stocks'] and 
-                self.enable_new_stock_historical and 
-                self.new_stock_historical_processor):
+            should_process_historical = False
+            stocks_to_process = set()
+            
+            # 🔧 修复：支持多种历史补充触发条件
+            if self.enable_new_stock_historical and self.new_stock_historical_processor:
+                force_first_run = self.new_stock_historical_config.get('force_first_run_historical', True)
+                force_all_stocks = self.new_stock_historical_config.get('force_all_stocks_historical', False)
                 
-                logger.info(f"🕐 发现 {len(changes['new_stocks'])} 只新增股票，启动历史处理")
+                if force_all_stocks:
+                    # 调试模式：为所有股票补充历史
+                    logger.info("🔧 调试模式：强制为所有股票补充历史公告")
+                    stocks_to_process = new_stocks.copy()
+                    should_process_historical = bool(stocks_to_process)
+                    
+                elif changes and changes['new_stocks']:
+                    # 正常模式：为新增股票补充历史
+                    logger.info(f"🕐 发现 {len(changes['new_stocks'])} 只新增股票，启动历史处理")
+                    stocks_to_process = changes['new_stocks']
+                    should_process_historical = True
+                    
+                elif force_first_run and changes and changes.get('is_first_sync', False):
+                    # 首次运行强制模式：为首次发现的所有股票补充历史
+                    logger.info(f"🚀 首次运行强制模式：为 {len(new_stocks)} 只股票补充历史公告")
+                    stocks_to_process = new_stocks.copy()
+                    should_process_historical = bool(stocks_to_process)
                 
-                # 异步处理，不阻塞主流程
-                asyncio.create_task(
-                    self._process_new_stocks_with_historical_processor(changes['new_stocks'])
-                )
+                if should_process_historical:
+                    logger.info(f"📚 准备为 {len(stocks_to_process)} 只股票补充历史公告")
+                    logger.debug(f"📝 待处理股票列表: {sorted(list(stocks_to_process))}")
+                    
+                    # 异步处理，不阻塞主流程
+                    asyncio.create_task(
+                        self._process_new_stocks_with_historical_processor(stocks_to_process)
+                    )
+                else:
+                    # 🔧 调试日志：说明为什么跳过处理
+                    reasons = []
+                    if not self.enable_new_stock_historical:
+                        reasons.append("新增股票历史处理功能已禁用")
+                    if not self.new_stock_historical_processor:
+                        reasons.append("历史处理器未初始化")
+                    if not force_all_stocks and not (changes and changes['new_stocks']):
+                        reasons.append("无新增股票")
+                    if not force_first_run or not (changes and changes.get('is_first_sync', False)):
+                        reasons.append("非首次运行或首次运行强制模式已禁用")
+                    
+                    logger.debug(f"ℹ️ 未满足历史补充触发条件，跳过处理。原因: {'; '.join(reasons)}")
+            else:
+                logger.debug("ℹ️ 新增股票历史处理功能已禁用")
             
         except Exception as e:
             logger.error(f"❌ 股票同步失败: {e}")

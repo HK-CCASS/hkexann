@@ -89,6 +89,10 @@ class EnhancedStockDiscoveryManager:
         self.cache_timestamp = None
         self.cache_source = None
 
+        # 🔧 修复：初始化股票变化检测所需的属性
+        self._previous_stocks = None  # 用于检测股票变化的基线
+        self._is_first_discovery = True  # 标记是否为首次发现
+
         # 预定义股票列表
         self._initialize_fallback_lists()
 
@@ -664,6 +668,8 @@ class EnhancedStockDiscoveryManager:
         """
         检测股票列表变化
         
+        🔧 修复：正确处理首次运行的股票变化检测
+        
         Returns:
             Dict[str, Any]: 变化检测结果
         """
@@ -675,27 +681,62 @@ class EnhancedStockDiscoveryManager:
         if not current_result.success:
             return {'success': False, 'error': current_result.error_message, 'timestamp': datetime.now()}
 
-        # 与缓存比较
-        changes = {'success': True, 'timestamp': datetime.now(), 'current_count': len(current_result.stocks),
-            'current_source': current_result.source.value, 'discovery_time': current_result.discovery_time,
-            'has_changes': False, 'new_stocks': set(), 'removed_stocks': set(), 'metadata': current_result.metadata}
+        current_stocks = current_result.stocks
+        
+        # 初始化变化检测结果
+        changes = {
+            'success': True, 
+            'timestamp': datetime.now(), 
+            'current_count': len(current_stocks),
+            'current_source': current_result.source.value, 
+            'discovery_time': current_result.discovery_time,
+            'has_changes': False, 
+            'new_stocks': set(), 
+            'removed_stocks': set(), 
+            'metadata': current_result.metadata,
+            'is_first_discovery': self._is_first_discovery
+        }
 
-        # 如果有之前的缓存，比较变化
-        if hasattr(self, '_previous_stocks') and self._previous_stocks:
+        # 🔧 关键修复：正确处理首次发现和后续变化检测
+        if self._is_first_discovery:
+            # 首次发现：将所有股票都视为新增
+            logger.info("🆕 首次股票发现，将所有股票视为新增")
+            changes['new_stocks'] = current_stocks.copy()
+            changes['has_changes'] = bool(current_stocks)
+            changes['previous_count'] = 0
+            
+            # 标记不再是首次发现
+            self._is_first_discovery = False
+            
+            logger.info(f"✅ 首次发现 {len(current_stocks)} 只股票，全部标记为新增")
+            
+        elif self._previous_stocks is not None:
+            # 后续发现：比较变化
             previous_stocks = self._previous_stocks
-            current_stocks = current_result.stocks
-
+            
             changes['new_stocks'] = current_stocks - previous_stocks
             changes['removed_stocks'] = previous_stocks - current_stocks
             changes['has_changes'] = bool(changes['new_stocks'] or changes['removed_stocks'])
             changes['previous_count'] = len(previous_stocks)
 
             if changes['has_changes']:
-                logger.info(
-                    f"检测到股票变化: 新增 {len(changes['new_stocks'])} 只，移除 {len(changes['removed_stocks'])} 只")
+                logger.info(f"📈 检测到股票变化: 新增 {len(changes['new_stocks'])} 只，移除 {len(changes['removed_stocks'])} 只")
+                if changes['new_stocks']:
+                    logger.info(f"   📝 新增股票: {sorted(list(changes['new_stocks']))}")
+                if changes['removed_stocks']:
+                    logger.info(f"   📝 移除股票: {sorted(list(changes['removed_stocks']))}")
+            else:
+                logger.debug("📊 股票列表无变化")
+        else:
+            # 异常情况：非首次但没有previous_stocks
+            logger.warning("⚠️ 检测到异常状态：非首次发现但缺少历史基线，重置为首次发现")
+            self._is_first_discovery = True
+            changes['new_stocks'] = current_stocks.copy()
+            changes['has_changes'] = bool(current_stocks)
+            changes['previous_count'] = 0
 
         # 保存当前股票列表供下次比较
-        self._previous_stocks = current_result.stocks.copy()
+        self._previous_stocks = current_stocks.copy()
 
         return changes
 
