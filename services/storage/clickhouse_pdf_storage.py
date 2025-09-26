@@ -253,6 +253,11 @@ class ClickHousePDFStorage:
             document_type = metadata.get('document_type', 'unknown')
             document_category = metadata.get('document_category', '')  # 修复：文档分类
             document_title = metadata.get('document_title', '')  # 新增：文档标题
+
+            # HKEX分类信息 (新增)
+            hkex_t1_code = metadata.get('t1_code', '')  # HKEX 1级分类代码
+            hkex_t2_code = metadata.get('t2_code', '')  # HKEX 2级/3级分类代码
+            hkex_category_name = metadata.get('hkex_category_name', '')  # HKEX分类名称
             # 修复：使用正确的字段名并提供合理的默认值
             published_date = metadata.get('published_date') or metadata.get('publish_date')
             
@@ -314,6 +319,7 @@ class ClickHousePDFStorage:
             INSERT INTO pdf_documents
             (doc_id, file_path, file_name, file_size, file_hash, page_count,
              stock_code, company_name, document_type, document_category, document_title,
+             hkex_t1_code, hkex_t2_code, hkex_category_name,
              publish_date, processing_status, processed_at)
             VALUES
             """
@@ -327,6 +333,7 @@ class ClickHousePDFStorage:
             values = f"('{doc_id}', '{escape_string(file_path)}', '{escape_string(original_filename)}', {file_size}, " \
                     f"'{file_hash}', {page_count}, '{escape_string(stock_code)}', '{escape_string(company_name)}', " \
                     f"'{escape_string(document_type)}', '{escape_string(document_category)}', '{escape_string(document_title)}', " \
+                    f"'{escape_string(hkex_t1_code)}', '{escape_string(hkex_t2_code)}', '{escape_string(hkex_category_name)}', " \
                     f"'{published_date_str}', 'pending', now())"
 
             await self._execute_query(query + values)

@@ -212,6 +212,28 @@ class MilvusCollectionManager:
                     max_length=500,
                     description="文档标题"
                 ),
+
+                # HKEX官方分类代码 (新增)
+                FieldSchema(
+                    name="hkex_t1_code",
+                    dtype=DataType.VARCHAR,
+                    max_length=10,
+                    description="HKEX 1级分类代码"
+                ),
+
+                FieldSchema(
+                    name="hkex_t2_code",
+                    dtype=DataType.VARCHAR,
+                    max_length=10,
+                    description="HKEX 2级/3级分类代码"
+                ),
+
+                FieldSchema(
+                    name="hkex_category_name",
+                    dtype=DataType.VARCHAR,
+                    max_length=200,
+                    description="HKEX分类名称"
+                ),
                 
                 FieldSchema(
                     name="chunk_type",

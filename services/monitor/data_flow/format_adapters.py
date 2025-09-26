@@ -43,20 +43,24 @@ class StandardAnnouncement:
     title: str
     file_link: str
     date_time: str
-    
-    # 分类字段  
+
+    # 分类字段
     long_text: str = ""
     short_text: str = ""
-    
+
+    # HKEX官方分类代码 (新增)
+    t1_code: str = ""  # 1级分类代码
+    t2_code: str = ""  # 2级/3级分类代码
+
     # 文件信息
     file_size: str = ""
     file_type: str = ""
-    
+
     # 系统字段
     news_id: str = ""
     market: str = "SEHK"
     source: str = ""
-    
+
     # 扩展字段
     metadata: Dict[str, Any] = None
     
@@ -90,7 +94,10 @@ class AnnouncementFormatAdapter:
                 'file_size': ['size'],
                 'file_type': ['ext'],
                 'news_id': ['newsId'],
-                'market': ['market']
+                'market': ['market'],
+                # HKEX分类代码字段
+                't1_code': ['t1Code'],
+                't2_code': ['t2Code']
             },
             DataSource.DOWNLOAD_API: {
                 'stock_code': ['stock_code', 'STOCK_CODE'],
@@ -103,7 +110,10 @@ class AnnouncementFormatAdapter:
                 'file_size': ['FILE_SIZE'],
                 'file_type': ['FILE_TYPE'],
                 'news_id': ['NEWS_ID'],
-                'market': ['MARKET']
+                'market': ['MARKET'],
+                # HKEX分类代码字段
+                't1_code': ['T1_CODE'],
+                't2_code': ['T2_CODE']
             }
         }
         
@@ -152,6 +162,8 @@ class AnnouncementFormatAdapter:
                 date_time=cleaned_data['date_time'],
                 long_text=cleaned_data.get('long_text', ''),
                 short_text=cleaned_data.get('short_text', ''),
+                t1_code=cleaned_data.get('t1_code', ''),
+                t2_code=cleaned_data.get('t2_code', ''),
                 file_size=cleaned_data.get('file_size', ''),
                 file_type=cleaned_data.get('file_type', ''),
                 news_id=cleaned_data.get('news_id', ''),
@@ -235,12 +247,19 @@ class AnnouncementFormatAdapter:
         
         for target_field, source_fields in mappings.items():
             value = None
-            
+
             # 尝试从多个可能的字段中提取值
             for source_field in source_fields:
-                if source_field in raw_data and raw_data[source_field]:
-                    value = raw_data[source_field]
-                    break
+                if source_field in raw_data:
+                    raw_value = raw_data[source_field]
+                    if raw_value:  # 检查值是否非空
+                        value = raw_value
+                        logger.debug(f"字段 {target_field} <- {source_field}: '{value}'")
+                        break
+                    else:
+                        logger.debug(f"字段 {target_field} 源字段 {source_field} 为空")
+                else:
+                    logger.debug(f"字段 {target_field} 源字段 {source_field} 不存在")
             
             # 特殊处理
             if target_field == 'file_link' and source == DataSource.MONITORING_API:

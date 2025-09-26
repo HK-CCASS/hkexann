@@ -20,6 +20,11 @@ CREATE TABLE IF NOT EXISTS hkex_analysis.pdf_documents (
     document_category String COMMENT '文档分类',
     document_title String COMMENT '文档标题',
     publish_date Date COMMENT '发布日期',
+
+    -- HKEX官方分类代码 (新增)
+    hkex_t1_code String COMMENT 'HKEX 1级分类代码',
+    hkex_t2_code String COMMENT 'HKEX 2级/3级分类代码',
+    hkex_category_name String COMMENT 'HKEX分类名称',
     
     -- 页面信息
     page_count UInt16 COMMENT '页数',
@@ -50,3 +55,8 @@ CREATE INDEX IF NOT EXISTS idx_pdf_document_type ON hkex_analysis.pdf_documents 
 CREATE INDEX IF NOT EXISTS idx_pdf_category ON hkex_analysis.pdf_documents (document_category) TYPE bloom_filter GRANULARITY 1;
 CREATE INDEX IF NOT EXISTS idx_pdf_title ON hkex_analysis.pdf_documents (document_title) TYPE tokenbf_v1(32768, 3, 0) GRANULARITY 1;
 CREATE INDEX IF NOT EXISTS idx_pdf_processing_status ON hkex_analysis.pdf_documents (processing_status) TYPE bloom_filter GRANULARITY 1;
+
+-- HKEX分类代码索引 (新增)
+CREATE INDEX IF NOT EXISTS idx_pdf_hkex_t1_code ON hkex_analysis.pdf_documents (hkex_t1_code) TYPE bloom_filter GRANULARITY 1;
+CREATE INDEX IF NOT EXISTS idx_pdf_hkex_t2_code ON hkex_analysis.pdf_documents (hkex_t2_code) TYPE bloom_filter GRANULARITY 1;
+CREATE INDEX IF NOT EXISTS idx_pdf_hkex_category_name ON hkex_analysis.pdf_documents (hkex_category_name) TYPE tokenbf_v1(32768, 3, 0) GRANULARITY 1;

@@ -368,10 +368,20 @@ class RealtimeDownloaderWrapper:
         # 生成文件名
         filename = self._generate_filename(announcement)
 
-        return {'url': pdf_url, 'filename': filename,
-            'metadata': {'stock_code': announcement.get('STOCK_CODE', 'Unknown'),
-                'title': announcement.get('TITLE', 'Unknown'), 'date_time': announcement.get('DATE_TIME', ''),
-                'announcement_id': announcement.get('ID', ''), 'source': 'realtime_monitor'}}
+        # 包含HKEX分类信息
+        metadata = {
+            'stock_code': announcement.get('STOCK_CODE', 'Unknown'),
+            'title': announcement.get('TITLE', 'Unknown'),
+            'date_time': announcement.get('DATE_TIME', ''),
+            'announcement_id': announcement.get('ID', ''),
+            'source': 'realtime_monitor',
+            # HKEX分类信息
+            't1_code': announcement.get('T1_CODE', ''),
+            't2_code': announcement.get('T2_CODE', ''),
+            'hkex_category_name': announcement.get('hkex_category_name', '')  # 如果已解析
+        }
+
+        return {'url': pdf_url, 'filename': filename, 'metadata': metadata}
 
     def _generate_filename(self, announcement: Dict[str, Any]) -> str:
         """生成下载文件名 - 格式: yyyy-mm-dd_股票名称_股票代码_公告标题.pdf"""
