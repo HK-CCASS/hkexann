@@ -638,7 +638,12 @@ class DocumentVectorizer:
                     "page_number": chunk.page_number,
                     "file_path": doc_metadata.file_path,
                     "chunk_length": chunk.text_length,
-                    "importance_score": importance_score
+                    "importance_score": importance_score,
+
+                    # HKEX分类字段 - 确保不为None
+                    "hkex_t1_code": doc_metadata.hkex_t1_code or "",
+                    "hkex_t2_code": doc_metadata.hkex_t2_code or "",
+                    "hkex_category_name": doc_metadata.hkex_category_name or ""
                 }
                 
                 insert_data.append(record)

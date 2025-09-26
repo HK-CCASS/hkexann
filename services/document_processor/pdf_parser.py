@@ -138,6 +138,11 @@ class DocumentMetadata:
     publish_date: Optional[datetime]
     page_count: int
 
+    # HKEX分类信息
+    hkex_t1_code: str = ""
+    hkex_t2_code: str = ""
+    hkex_category_name: str = ""
+
 
 class HKEXPDFParser:
     """
@@ -862,7 +867,7 @@ class HKEXPDFParser:
         # 默认为段落
         return 'paragraph'
 
-    def parse_pdf(self, pdf_path: Path) -> Tuple[DocumentMetadata, List[DocumentChunk]]:
+    def parse_pdf(self, pdf_path: Path, metadata: Optional[Dict[str, Any]] = None) -> Tuple[DocumentMetadata, List[DocumentChunk]]:
         """
         完整解析港交所PDF文档，生成元数据和智能分块结果
         
@@ -944,11 +949,22 @@ class HKEXPDFParser:
             # 4. 创建文档元数据
             doc_id = f"doc_{file_hash[:16]}"
 
+            # 提取HKEX分类信息
+            hkex_t1_code = ""
+            hkex_t2_code = ""
+            hkex_category_name = ""
+
+            if metadata:
+                hkex_t1_code = metadata.get('t1_code', '')
+                hkex_t2_code = metadata.get('t2_code', '')
+                hkex_category_name = metadata.get('hkex_category_name', '')
+
             doc_metadata = DocumentMetadata(doc_id=doc_id, file_path=str(pdf_path), file_name=pdf_path.name,
                 file_size=file_size, file_hash=file_hash, stock_code=path_metadata['stock_code'],
                 company_name=path_metadata['company_name'], document_type=path_metadata['document_type'],
                 document_category=path_metadata['document_category'], document_title=path_metadata['document_title'],
-                publish_date=path_metadata['publish_date'], page_count=page_count)
+                publish_date=path_metadata['publish_date'], page_count=page_count,
+                hkex_t1_code=hkex_t1_code, hkex_t2_code=hkex_t2_code, hkex_category_name=hkex_category_name)
 
             # 5. 提取文本块
             text_blocks = self.extract_text_blocks(pdf_path)

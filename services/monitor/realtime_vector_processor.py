@@ -128,7 +128,7 @@ class RealtimeVectorProcessor:
             
             # 直接使用现有的pipeline.process_single_document方法
             # 这避免了重复代码，确保使用标准的文档处理流程
-            result = await self.pipeline.process_single_document(pdf_path_obj)
+            result = await self.pipeline.process_single_document(pdf_path_obj, metadata)
             
             # 如果需要修改doc_id以包含实时监听信息
             if result.get('success', False) and metadata:

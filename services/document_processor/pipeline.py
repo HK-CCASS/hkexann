@@ -163,23 +163,24 @@ class DocumentProcessingPipeline:
         
         return pdf_files
     
-    async def process_single_document(self, pdf_path: Path) -> Dict[str, Any]:
+    async def process_single_document(self, pdf_path: Path, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         处理单个PDF文档
-        
+
         Args:
             pdf_path: PDF文件路径
-            
+            metadata: 可选的元数据信息（包含HKEX分类信息）
+
         Returns:
             处理结果
         """
         start_time = time.time()
-        
+
         try:
             logger.debug(f"处理文档: {pdf_path.name}")
-            
+
             # 1. 解析PDF
-            doc_metadata, chunks = self.pdf_parser.parse_pdf(pdf_path)
+            doc_metadata, chunks = self.pdf_parser.parse_pdf(pdf_path, metadata)
             
             if not chunks:
                 return {
