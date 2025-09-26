@@ -1,10 +1,11 @@
 """
 双重公告过滤器
 实现先股票过滤，再类型过滤的两阶段过滤逻辑
+支持HKEX官方分类代码的精确过滤
 """
 
 import logging
-from typing import List, Dict, Set, Any
+from typing import List, Dict, Set, Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -23,28 +24,51 @@ class DualAnnouncementFilter:
     def __init__(self, monitored_stocks: Set[str], config: dict):
         """
         初始化双重过滤器
-        
+
         Args:
             monitored_stocks: 监听的股票代码集合（5位数格式，如 "00700"）
             config: 过滤配置
         """
         self.monitored_stocks = set(monitored_stocks)  # 创建副本避免外部修改
         self.config = config
-        
+
         # 从配置读取过滤条件
         filtering_config = config.get('realtime_monitoring', {}).get('filtering', {})
         self.stock_filter_enabled = filtering_config.get('stock_filter_enabled', True)
         self.type_filter_enabled = filtering_config.get('type_filter_enabled', True)
         self.excluded_categories = filtering_config.get('excluded_categories', [])
         self.included_keywords = filtering_config.get('included_keywords', [])
-        
+
+        # HKEX分类系统支持
+        self.hkex_classification_enabled = filtering_config.get('hkex_classification_enabled', True)
+        self.classification_parser = None
+        self.excluded_codes: Set[str] = set()
+
+        # 初始化HKEX分类解析器
+        if self.hkex_classification_enabled:
+            try:
+                from .classification_parser import get_classification_parser
+                self.classification_parser = get_classification_parser()
+                if self.classification_parser.load_classifications():
+                    # 将排除的类别名称转换为分类代码
+                    self.excluded_codes = self.classification_parser.get_excluded_codes_by_names(self.excluded_categories)
+                    logger.info(f"✅ HKEX分类系统已启用，加载了 {len(self.classification_parser.categories)} 个分类")
+                    logger.info(f"   排除的分类代码: {len(self.excluded_codes)} 个")
+                else:
+                    logger.warning("❌ HKEX分类系统启用失败，将使用传统过滤方式")
+                    self.hkex_classification_enabled = False
+            except Exception as e:
+                logger.error(f"初始化HKEX分类系统失败: {e}，将使用传统过滤方式")
+                self.hkex_classification_enabled = False
+
         logger.info(f"双重过滤器初始化完成")
         logger.info(f"  监听股票数量: {len(self.monitored_stocks)}")
         logger.info(f"  股票过滤: {'启用' if self.stock_filter_enabled else '禁用'}")
         logger.info(f"  类型过滤: {'启用' if self.type_filter_enabled else '禁用'}")
+        logger.info(f"  HKEX分类系统: {'启用' if self.hkex_classification_enabled else '禁用'}")
         logger.info(f"  排除类别数量: {len(self.excluded_categories)}")
         logger.info(f"  包含关键字数量: {len(self.included_keywords)}")
-        
+
         if self.monitored_stocks:
             logger.debug(f"  监听的股票代码: {sorted(list(self.monitored_stocks))[:10]}{'...' if len(self.monitored_stocks) > 10 else ''}")
     
@@ -182,6 +206,7 @@ class DualAnnouncementFilter:
     async def filter_by_announcement_type(self, announcements: List[Dict]) -> List[Dict]:
         """
         第二阶段：按公告类型过滤
+        支持HKEX分类代码的精确过滤
 
         Args:
             announcements: 股票过滤后的公告列表
@@ -191,10 +216,42 @@ class DualAnnouncementFilter:
         """
         filtered = []
         category_stats = {}  # 统计各类别的公告数量
+        code_stats = {}  # 统计分类代码的使用情况
 
         for announcement in announcements:
             try:
-                # 第一步：获取或推断公告类型
+                # 优先使用HKEX分类代码进行过滤
+                if self.hkex_classification_enabled and self.classification_parser:
+                    # 第一步：尝试从API字段获取分类代码
+                    category_code = self._extract_category_code(announcement)
+
+                    if category_code:
+                        # 使用分类代码进行精确过滤
+                        category_stats[category_code] = category_stats.get(category_code, 0) + 1
+
+                        # 检查分类代码是否在排除列表中
+                        if self.classification_parser.is_excluded_category(category_code, self.excluded_codes):
+                            # 获取分类信息用于日志
+                            category_info = self.classification_parser.get_category_hierarchy(category_code)
+                            category_name = category_info['level3_name'] if category_info else category_code
+                            logger.debug(f"❌ 分类代码 '{category_code}' ({category_name}) 在排除列表中，跳过")
+                            continue
+
+                        # 检查包含关键字（如果配置了的话）
+                        if self.included_keywords:
+                            category_info = self.classification_parser.get_category_hierarchy(category_code)
+                            if category_info:
+                                category_text = f"{category_info['level1_name']} {category_info['level2_name']} {category_info['level3_name']}"
+                                if not self._contains_included_keywords(category_text, announcement):
+                                    logger.debug(f"❌ 分类 '{category_text}' 不包含必需的关键字，跳过")
+                                    continue
+
+                        # 通过HKEX分类过滤
+                        filtered.append(announcement)
+                        logger.debug(f"✅ 分类代码 '{category_code}' 通过HKEX分类过滤，保留")
+                        continue
+
+                # 降级到传统LONG_TEXT过滤
                 announcement_type = self._get_or_infer_announcement_type(announcement)
 
                 # 统计
@@ -208,32 +265,38 @@ class DualAnnouncementFilter:
                 # 第三步：应用过滤策略
                 if self._should_keep_announcement(announcement_type, announcement):
                     filtered.append(announcement)
-                    logger.debug(f"✅ 公告类型 '{announcement_type}' 通过过滤，保留")
+                    logger.debug(f"✅ 公告类型 '{announcement_type}' 通过传统过滤，保留")
                 else:
                     logger.debug(f"❌ 公告不符合过滤条件，跳过")
 
             except Exception as e:
                 logger.error(f"处理公告类型时出错: {e}, 公告: {announcement}")
                 continue
-        
+
         # 记录类别统计
         if category_stats:
             logger.info(f"📊 公告类型分布: {dict(sorted(category_stats.items()))}")
-            
-            # 显示被过滤掉的类型
-            excluded_types = []
-            kept_types = []
+
+            # 显示过滤统计
+            excluded_count = 0
+            kept_count = 0
+
             for ann_type, count in category_stats.items():
-                if self._is_excluded_category(ann_type):
-                    excluded_types.append(f"{ann_type}({count})")
+                # 检查是否为HKEX分类代码
+                if self.hkex_classification_enabled and ann_type.isdigit() and len(ann_type) == 5:
+                    if self.classification_parser.is_excluded_category(ann_type, self.excluded_codes):
+                        excluded_count += count
+                    else:
+                        kept_count += count
                 else:
-                    kept_types.append(f"{ann_type}({count})")
-            
-            if excluded_types:
-                logger.info(f"❌ 被过滤的类型: {', '.join(excluded_types)}")
-            if kept_types:
-                logger.info(f"✅ 保留的类型: {', '.join(kept_types)}")
-        
+                    # 传统类型过滤
+                    if self._is_excluded_category(ann_type):
+                        excluded_count += count
+                    else:
+                        kept_count += count
+
+            logger.info(f"📈 过滤统计: 保留 {kept_count} 条，过滤 {excluded_count} 条")
+
         return filtered
     
     def _is_excluded_category(self, announcement_type: str) -> bool:
@@ -338,15 +401,25 @@ class DualAnnouncementFilter:
     
     def get_filter_stats(self) -> Dict[str, Any]:
         """获取过滤器统计信息"""
-        return {
+        stats = {
             "monitored_stocks_count": len(self.monitored_stocks),
             "stock_filter_enabled": self.stock_filter_enabled,
             "type_filter_enabled": self.type_filter_enabled,
             "excluded_categories_count": len(self.excluded_categories),
             "included_keywords_count": len(self.included_keywords),
             "excluded_categories": self.excluded_categories,
-            "included_keywords": self.included_keywords
+            "included_keywords": self.included_keywords,
+            "hkex_classification_enabled": self.hkex_classification_enabled,
+            "excluded_codes_count": len(self.excluded_codes)
         }
+
+        # 添加HKEX分类系统统计
+        if self.hkex_classification_enabled and self.classification_parser:
+            classification_stats = self.classification_parser.get_statistics()
+            stats["hkex_classification_stats"] = classification_stats
+            stats["excluded_codes"] = list(self.excluded_codes)
+
+        return stats
     
     def is_stock_monitored(self, stock_code: str) -> bool:
         """检查股票是否在监听列表中"""
@@ -472,3 +545,70 @@ class DualAnnouncementFilter:
 
         # 其他情况默认保留（可以根据需要调整）
         return True
+
+    def _extract_category_code(self, announcement: Dict) -> Optional[str]:
+        """
+        从公告中提取HKEX分类代码
+
+        优先级：
+        1. T2_CODE (2级分类代码，更精确)
+        2. T1_CODE (1级分类代码，备选)
+
+        Args:
+            announcement: 公告数据
+
+        Returns:
+            分类代码字符串或None
+        """
+        # 优先使用T2_CODE (3级分类代码)
+        t2_code = announcement.get('T2_CODE', '').strip()
+        if t2_code and t2_code.isdigit():
+            # 标准化为5位数格式
+            return t2_code.zfill(5)
+
+        # 备选使用T1_CODE (1级分类代码)
+        t1_code = announcement.get('T1_CODE', '').strip()
+        if t1_code and t1_code.isdigit():
+            # 转换为5位数格式（通常T1_CODE是5位数）
+            return t1_code.zfill(5)
+
+        return None
+
+    def _contains_included_keywords(self, category_text: str, announcement: Dict = None) -> bool:
+        """
+        检查分类文本是否包含必需的关键字
+
+        Args:
+            category_text: 分类文本
+            announcement: 公告数据（可选）
+
+        Returns:
+            是否包含关键字
+        """
+        if not self.included_keywords:
+            return True  # 如果没有配置关键字，默认通过
+
+        category_text_lower = category_text.lower().strip()
+
+        # 检查分类文本
+        for keyword in self.included_keywords:
+            keyword_lower = keyword.lower().strip()
+            if keyword_lower and keyword_lower in category_text_lower:
+                logger.debug(f"✅ 分类文本匹配关键字 '{keyword}': {category_text}")
+                return True
+
+        # 如果提供了公告，也检查标题
+        if announcement:
+            title = announcement.get('TITLE', '') or ""
+            title_lower = title.lower().strip()
+
+            for keyword in self.included_keywords:
+                keyword_lower = keyword.lower().strip()
+                if keyword_lower and keyword_lower in title_lower:
+                    logger.debug(f"✅ 标题匹配关键字 '{keyword}': {title[:50]}...")
+                    return True
+
+        # 记录不匹配的情况
+        logger.debug(f"❌ 分类文本和标题均未匹配任何关键字 - 文本: '{category_text[:50]}...', "
+                    f"标题: '{announcement.get('TITLE', '')[:30] if announcement else 'N/A'}...'")
+        return False

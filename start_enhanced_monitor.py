@@ -122,7 +122,7 @@ def load_config(config_path: str = "config.yaml") -> Dict[str, Any]:
 
             # 历史数据处理配置
             'historical_processing': {'historical_days': 365,  # 常规模式历史天数
-                                      'first_run_historical_days':180,  # 首次运行历史天数，快速启动
+                                      'first_run_historical_days':3,  # 首次运行历史天数，快速启动
                                       'stock_batch_size': 10, 'date_chunk_days': 30, 'max_concurrent_historical': 3,
                                       'api_delay': 2.0},
 

@@ -72,8 +72,38 @@ python main.py -s 00700 --async
 # Start real-time monitoring
 python start_enhanced_monitor.py
 
+# Test mode with detailed output
+python start_enhanced_monitor.py -t
+
+# Custom configuration
+python start_enhanced_monitor.py -c custom_config.yaml
+
 # With forced async mode
 HKEX_FORCE_ASYNC=true python main.py --config config.yaml
+```
+
+**Manual Historical Backfill:**
+```bash
+# Single stock, last 7 days
+python manual_historical_backfill.py -s 00700 -d 7
+
+# Multiple stocks with date range
+python manual_historical_backfill.py -s "00700,00939,01398" --date-range 2025-09-10 2025-09-17
+
+# From stock list file
+python manual_historical_backfill.py -s stocks.txt -d 30
+
+# Custom batch size and configuration
+python manual_historical_backfill.py -s 00700 -d 7 -c custom_config.yaml -b 10
+
+# Disable filtering (get all announcements)
+python manual_historical_backfill.py -s 00700 -d 7 --no-filter
+
+# Dry run mode (preview without execution)
+python manual_historical_backfill.py -s 00700 -d 7 --dry-run
+
+# Save results to JSON file
+python manual_historical_backfill.py -s 00700 -d 7 --output results.json
 ```
 
 ### Database Operations
@@ -113,6 +143,15 @@ python main.py --run-task "task_name"
 
 # Test daemon control functionality
 python daemon_control.py test
+
+# Verify configuration files
+python tools/verify_configuration.py
+
+# Test ClickHouse deduplication
+python tools/test_deduplication.py
+
+# Run deduplication tool
+python tools/run_deduplication.py
 ```
 
 ### Code Quality and Testing
@@ -120,6 +159,10 @@ python daemon_control.py test
 # Currently no formal testing framework configured
 # When adding tests, create them in tests/ directory following pytest conventions
 # No linting or formatting tools currently configured in project
+
+# Available test files for integration testing:
+python tests/test_new_stock_historical_processing.py
+python tests/test_integration_new_stock_historical.py
 ```
 
 ## Configuration
@@ -194,6 +237,12 @@ The project follows multiple architectural patterns:
   - `开发指南.md`: Developer guide for extending the system
   - `测试文档.md`: Testing strategy and implementation
 - **sql/**: Database schema and queries
+- **tools/**: Utility tools and scripts
+  - `clickhouse_deduplication_tool.py`: ClickHouse data deduplication
+  - `verify_configuration.py`: Configuration validation
+  - `test_deduplication.py`: Deduplication testing
+  - `run_deduplication.py`: Deduplication execution script
+- **manual_historical_backfill.py**: Manual historical announcement backfill script
 - **hkexann/**: Downloaded announcement storage (auto-created)
 - **tests/**: Test suite directory (create when implementing tests)
 
@@ -251,3 +300,23 @@ The monitoring system is the enterprise-grade component with:
 2. **Bug Fixes**: Apply to both `legacy/` and `main.py` if affecting both
 3. **Monitoring**: Continue enhancing `services/monitor/` independently
 4. **Migration**: Gradually move functionality from `main.py` to `legacy/`
+
+## Key Features
+
+### Manual Historical Backfill
+The system includes a comprehensive manual historical announcement backfill feature:
+- **Script**: `manual_historical_backfill.py` (540 lines of code)
+- **Input Methods**: Single stock, multiple stocks, or file-based stock lists
+- **Date Ranges**: Flexible date configuration (days back or specific date ranges)
+- **Component Reuse**: Leverages existing monitoring system components
+- **Async Processing**: Supports concurrent processing with configurable batch sizes
+- **Filtering**: Configurable dual-stage filtering (stocks + announcement types)
+- **Monitoring**: Detailed progress tracking and performance statistics
+
+### Real-time Monitoring System
+Enterprise-grade monitoring system with:
+- **API Polling**: 60-second intervals with intelligent caching
+- **Dual Filtering**: Stock-based and type-based filtering
+- **Vector Processing**: Integration with Milvus for semantic search
+- **Error Recovery**: Comprehensive retry mechanisms and fault tolerance
+- **Performance Monitoring**: Real-time statistics and health metrics

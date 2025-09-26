@@ -19,8 +19,10 @@
       "Bash(pip install:*)",
       "Bash(grep:*)",
       "Bash(rm:*)",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "mcp__sequential-thinking__sequentialthinking"
     ],
     "deny": []
-  }
+  },
+  "outputStyle": "codex"
 }
