@@ -64,17 +64,28 @@ class EnhancedStockDiscoveryManager:
     def __init__(self, config_manager, clickhouse_client=None):
         """
         初始化增强股票发现管理器
-        
+
         Args:
-            config_manager: 配置管理器
+            config_manager: 配置管理器或配置字典（为了向后兼容）
             clickhouse_client: ClickHouse客户端 (可选)
         """
-        self.config_manager = config_manager
         self.clickhouse_client = clickhouse_client
-        
+
+        # 处理配置参数 - 支持ConfigManager对象或字典
+        if hasattr(config_manager, 'config') and hasattr(config_manager, 'load_config'):
+            # 是ConfigManager对象
+            self.config_manager = config_manager
+            stock_discovery_config = config_manager.config.get('stock_discovery', {})
+        elif isinstance(config_manager, dict):
+            # 是配置字典 - 创建一个包装对象，config属性指向包含stock_discovery的完整配置
+            full_config = {'stock_discovery': config_manager}
+            self.config_manager = type('ConfigWrapper', (), {'config': full_config})()
+            stock_discovery_config = config_manager
+        else:
+            raise ValueError("config_manager必须是ConfigManager对象或配置字典")
+
         # 如果没有提供ClickHouse客户端但配置中启用了ClickHouse，尝试自动创建
         if self.clickhouse_client is None:
-            stock_discovery_config = getattr(config_manager, 'config', {}).get('stock_discovery', {})
             if stock_discovery_config.get('enabled', False):
                 logger.info("检测到ClickHouse配置已启用，尝试自动创建客户端...")
                 self.clickhouse_client = self._create_clickhouse_client(stock_discovery_config)

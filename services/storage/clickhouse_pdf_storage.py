@@ -254,10 +254,45 @@ class ClickHousePDFStorage:
             document_category = metadata.get('document_category', '')  # 修复：文档分类
             document_title = metadata.get('document_title', '')  # 新增：文档标题
 
-            # HKEX分类信息 (新增)
-            hkex_t1_code = metadata.get('t1_code', '')  # HKEX 1级分类代码
-            hkex_t2_code = metadata.get('t2_code', '')  # HKEX 2级/3级分类代码
-            hkex_category_name = metadata.get('hkex_category_name', '')  # HKEX分类名称
+            # HKEX分类信息 (支持直接字段、HKEXClassification对象和传统字段)
+            # 首先检查metadata中是否直接有新字段名
+            hkex_level1_code = metadata.get('hkex_level1_code', '')
+            hkex_level1_name = metadata.get('hkex_level1_name', '')
+            hkex_level2_code = metadata.get('hkex_level2_code', '')
+            hkex_level2_name = metadata.get('hkex_level2_name', '')
+            hkex_level3_code = metadata.get('hkex_level3_code', '')
+            hkex_level3_name = metadata.get('hkex_level3_name', '')
+            hkex_classification_confidence = metadata.get('hkex_classification_confidence', 0.0)
+            hkex_full_path = metadata.get('hkex_full_path', '')
+            hkex_classification_method = metadata.get('hkex_classification_method', 'hkex_official')
+
+            # 如果新字段为空，尝试从HKEXClassification对象提取
+            if not any([hkex_level1_code, hkex_level1_name, hkex_level2_code, hkex_level2_name, hkex_level3_code, hkex_level3_name]):
+                hkex_classification = metadata.get('hkex_classification')
+                if hkex_classification and hasattr(hkex_classification, 'level1_code'):
+                    hkex_level1_code = hkex_classification.level1_code or ''
+                    hkex_level1_name = hkex_classification.level1_name or ''
+                    hkex_level2_code = hkex_classification.level2_code or ''
+                    hkex_level2_name = hkex_classification.level2_name or ''
+                    hkex_level3_code = hkex_classification.level3_code or ''
+                    hkex_level3_name = hkex_classification.level3_name or ''
+                    hkex_classification_confidence = hkex_classification.confidence or 0.0
+                    hkex_full_path = hkex_classification.full_path or ''
+                    hkex_classification_method = hkex_classification.classification_method or 'hkex_official'
+
+            # 如果仍为空，回退到传统字段提取方式
+            if not any([hkex_level1_code, hkex_level1_name, hkex_level2_code, hkex_level2_name, hkex_level3_code, hkex_level3_name]):
+                hkex_level1_code = metadata.get('t1_code', '')
+                hkex_level1_name = metadata.get('t1_name', '')
+                hkex_level2_code = metadata.get('t2_code', '')
+                hkex_level2_name = metadata.get('t2_name', '')
+                hkex_level3_code = metadata.get('t3_code', '')
+                hkex_level3_name = metadata.get('hkex_category_name', '')
+
+            # 兼容性字段 (关键字分类系统)
+            keyword_category = metadata.get('keyword_category', '')
+            keyword_priority = metadata.get('keyword_priority', 0)
+            keyword_confidence = metadata.get('keyword_confidence', 0.0)
             # 修复：使用正确的字段名并提供合理的默认值
             published_date = metadata.get('published_date') or metadata.get('publish_date')
             
@@ -319,7 +354,10 @@ class ClickHousePDFStorage:
             INSERT INTO pdf_documents
             (doc_id, file_path, file_name, file_size, file_hash, page_count,
              stock_code, company_name, document_type, document_category, document_title,
-             hkex_t1_code, hkex_t2_code, hkex_category_name,
+             hkex_level1_code, hkex_level1_name, hkex_level2_code, hkex_level2_name,
+             hkex_level3_code, hkex_level3_name, hkex_classification_confidence,
+             hkex_full_path, hkex_classification_method,
+             keyword_category, keyword_priority, keyword_confidence,
              publish_date, processing_status, processed_at)
             VALUES
             """
@@ -333,13 +371,25 @@ class ClickHousePDFStorage:
             values = f"('{doc_id}', '{escape_string(file_path)}', '{escape_string(original_filename)}', {file_size}, " \
                     f"'{file_hash}', {page_count}, '{escape_string(stock_code)}', '{escape_string(company_name)}', " \
                     f"'{escape_string(document_type)}', '{escape_string(document_category)}', '{escape_string(document_title)}', " \
-                    f"'{escape_string(hkex_t1_code)}', '{escape_string(hkex_t2_code)}', '{escape_string(hkex_category_name)}', " \
+                    f"'{escape_string(hkex_level1_code)}', '{escape_string(hkex_level1_name)}', '{escape_string(hkex_level2_code)}', " \
+                    f"'{escape_string(hkex_level2_name)}', '{escape_string(hkex_level3_code)}', '{escape_string(hkex_level3_name)}', " \
+                    f"{hkex_classification_confidence}, '{escape_string(hkex_full_path)}', '{escape_string(hkex_classification_method)}', " \
+                    f"'{escape_string(keyword_category)}', {keyword_priority}, {keyword_confidence}, " \
                     f"'{published_date_str}', 'pending', now())"
 
+            # 执行插入操作
             await self._execute_query(query + values)
 
-            logger.info(f"✅ 文档元数据已存储: {doc_id}")
-            return True
+            # 验证数据是否真正写入成功
+            verify_query = f"SELECT COUNT(*) FROM pdf_documents WHERE doc_id = '{doc_id}'"
+            verification_result = await self._execute_query(verify_query)
+
+            if verification_result and len(verification_result) > 0 and verification_result[0][0] == '1':
+                logger.info(f"✅ 文档元数据已存储并验证成功: {doc_id}")
+                return True
+            else:
+                logger.error(f"❌ 数据写入验证失败: {doc_id} - 未在数据库中找到记录")
+                return False
             
         except Exception as e:
             logger.error(f"❌ 存储文档元数据失败: {e}")

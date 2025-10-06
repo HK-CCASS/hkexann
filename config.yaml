@@ -151,15 +151,20 @@ common_keywords:
     weight: 0.8
 
 
-# 公告分类配置（现已改为纯净LONG_TEXT分类）
-# 说明：系统现在直接使用港交所官方LONG_TEXT作为分类结果，不进行任何映射
+# 公告分类配置（已简化）
 announcement_categories:
   enabled: true  # 是否启用公告分类功能
-  # 排除的分类列表（这些分类的公告将不会被下载）
-  excluded_categories:
-    - "翌日披露報表"
-    - "展示文件"
-    - "月報表"
+
+# HKEX官方分类系统配置
+classification:
+  use_hkex_official: true                # 启用HKEX官方三级分类系统
+  hkex_confidence_threshold: 0.4         # HKEX官方分类置信度阈值（降低以减少分类失败）
+  fallback_to_keyword: true              # 启用关键字分类回退（作为官方分类的补充）
+
+  # 数据源配置
+  data_source: "csv"                     # 数据源类型：csv(CSV文件) 或 api(在线API)
+  csv_classification_file: "HKEX--分类信息-20250926.csv"  # CSV分类文件路径
+  disable_online_update: true            # 禁用在线更新功能
 
 # 数据库配置
 database:
@@ -200,65 +205,12 @@ stock_discovery:
   # 自定义股票列表配置 (当stock_list_source为"custom"时使用)
   custom_stocks:
     # 可直接配置股票代码列表
-    stock_codes : ['01712','03800','01676',
-               '02561','03316','01003',
-               '00797','06855','02651',
-               '01769']
+    stock_codes : ['03800']
 
     # 或从文件读取
     from_file: null  # 指向股票代码文件的路径，每行一个代码
     # 从MySQL数据库读取
     from_database: false  # 是否从数据库读取股票列表
-
-# 守护者进程配置
-daemon:
-  enabled: true                     # 是否启用守护者进程模式
-  schedule:
-    # 定时任务配置 - 支持多个时间点
-    times: ["09:00", "18:00"]       # 每天执行时间 (24小时制)
-    # 或者使用 cron 表达式 (高级用法)
-    # cron: "0 9,18 * * *"          # 每天9点和18点执行
-
-  # 守护者进程运行配置
-  runtime:
-    check_interval: 60              # 检查调度间隔 (秒)
-    max_retries: 3                  # 任务失败最大重试次数
-    retry_delay: 300                # 重试间隔 (秒)
-    log_level: "INFO"               # 守护者进程日志级别
-
-  # 进程管理
-  process:
-    pid_file: "hkex_daemon.pid"     # PID文件路径
-    log_file: "hkex_daemon.log"     # 守护者进程专用日志文件
-    working_dir: "."                # 工作目录
-
-  # 任务配置
-  tasks:
-    # 默认执行所有启用的下载任务
-    run_all_enabled: true
-    # 或者指定特定任务名称
-    specific_tasks: []
-    # 是否在启动时立即执行一次
-    run_on_startup: false
-    # 增量下载模式 - 只下载最新的公告
-    incremental_mode: true
-    # 增量下载的天数范围 (从今天往前推几天)
-    incremental_days: 7
-
-    # 数据库任务特殊配置
-    database_tasks:
-      # 是否在每次执行前刷新数据库连接
-      refresh_connection: true
-      # 数据库查询超时时间(秒)
-      query_timeout: 30
-      # 是否显示详细的股票处理进度
-      show_progress: true
-
-  # 监控和通知 (未来扩展)
-  monitoring:
-    enabled: false
-    email_notifications: false
-    webhook_url: ""
 
 # 异步下载配置
 async:
@@ -284,79 +236,40 @@ advanced:
   overwrite_existing: false
   user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/101.0.4951.67 Safari/537.36"
 
-# 双重过滤器配置
-dual_filter:
-  stock_filter_enabled: true              # 启用股票过滤（只保留监控股票列表中的股票）
-  type_filter_enabled: true               # 启用类型过滤（按公告类型筛选）
-  hkex_classification_enabled: true       # 启用HKEX官方分类系统
-  excluded_categories: ["翌日披露報表",'股东大会',"財務報表/環境、社會及管治資料 - [中期/半年度報告]","公告及通告 - [股息或分派（公告表格）]","更换董事","海外監管公告","末期業績","更換董事或重要行政職能或職責的變更","盈利警告 ",
-  " 債券及結構性產品",
-  "合併守則 - 交易披露",
-  "其他-業務發展最新情況","內幕消息 / 延遲發表業績公告","股東特別大會通告",'更換核數師',"董事會召開日期"
+# 简化公告过滤配置 - 暂时禁用，使用HKEX官方分类代替
+announcement_filter:
+  stock_filter_enabled: false             # 禁用股票过滤（使用HKEX官方分类代替）
+  type_filter_enabled: false              # 禁用类型过滤（使用HKEX官方分类代替）
 
-  ]                 # 排除的公告类型列表（使用关键字模式时留空）
-  included_keywords:                      # 必须包含的关键字列表（只保留包含这些关键字的公告）
-  - "中期/半年度報告"
-  - "半年度報告"
-  - "中期報告"
+  # 排除的公告类型（这些类型的公告将被过滤掉）
+  excluded_categories:
+    - "翌日披露報表"           # 日报类公告
+    - "展示文件"              # 展示文件
+    - "月報表"                # 月报
+    - "股东大会"              # 股东大会
+    - "更换董事"              # 董事变更
+    - "更換董事"              # 董事变更（繁体）
+    - "海外監管公告"          # 海外监管
+    - "末期業績"              # 年报业绩
+    - "盈利警告"              # 盈利警告
+
+  # 必须包含的关键字（只保留包含这些关键字的公告）
+  # 如果列表为空，则不进行包含过滤
+  included_keywords:
+    - "中期/半年度報告"        # 中期报告
+    - "半年度報告"            # 半年度报告
+    - "中期報告"              # 中期报告
     # IPO相关
-    # - "一般授權"
-    # - "根據一般性授權"
-    # - "根據一般性授權發行股份"
-    # - "根據特定授權發行股份"
-    # - "授权"
-    # - "首次公開發售"
-    # - "首次公开发行"
-    # - "新股上市"
-    # - "IPO"
-#    # 私有化/退市
-#    - "私有化"
-#    - "除牌"
-#    - "退市"
-    # 全购/收购
-    # - "全購"
-    # - "全面收購"
-    # - "強制性收購"
-    # - "要约"
-    # - "收購"
-    # - "收购"
-    # - "併購"
-    # - "兼并收购"
-    # - "須予披露的交易"
-    # 股本变动
-    # - "合股"
-    # - "股份合併"
-    # - "股票合併"
-    # - "資本重組"
-    # - "股本重組"
-    # - "拆股"
-    # - "股份分拆"
-    # - "股票分割"
-    # 融资活动
-    # - "供股"
-    # - "權利股"
-    # - "認股權"
-    # - "配股"
-    # - "配售"
-    # - "配发结果"
-    # - '供股结果'
-    # - "股份配售"
-    # - "可转换"
-    # - "可轉換"
-    # - "轉換債券"
-    # - "可換股債券"
-    # 股份回购
-    # - "回購"
-    # - "股份回購"
-    # - "購回股份"
-    # 停牌复牌
-#    - "暫停買賣"
-#    - "暂停买卖"
-#    - "停牌"
-#    - "復牌"
-    # 须予披露交易
-#    - "須予披露的交易"
-#    - "须予披露的交易"
+    - "首次公開發售"          # 首次公开招股
+    - "IPO"                   # IPO
+    # 企业行动
+    - "私有化"                # 私有化
+    - "全購"                  # 全购
+    - "合股"                  # 合股
+    - "供股"                  # 供股
+    - "回購"                  # 股份回购
+    - "停牌"                  # 停牌
+    - "復牌"                  # 复牌
 
 # 🆕 新增股票历史处理配置
 new_stock_historical_processing:

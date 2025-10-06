@@ -76,15 +76,13 @@ def load_config(config_path: str = "config.yaml") -> Dict[str, Any]:
             'api_monitor': {'poll_interval': 60,  # 5分钟检查一次
                             'timeout': 30, 'max_retries': 3},
 
-            # 双重过滤配置 - 优先使用 dual_filter 配置节
-            'realtime_monitoring': {'filtering': 
-                config.get('dual_filter', {
-                    'stock_filter_enabled': True, 
-                    'type_filter_enabled': True,
-                    'excluded_categories': [],
-                    'included_keywords': []
-                })
-            },
+            # 简化过滤配置
+            'announcement_filter': config.get('announcement_filter', {
+                'stock_filter_enabled': True,
+                'type_filter_enabled': True,
+                'excluded_categories': [],
+                'included_keywords': []
+            }),
 
             # ClickHouse股票发现配置（从config.yaml的stock_discovery段获取，支持环境变量）
             'stock_discovery': config.get('stock_discovery', {
@@ -246,7 +244,7 @@ async def run_test_mode():
     monitor = None
     try:
         from services.monitor.api_monitor import HKEXAPIMonitor
-        from services.monitor.dual_filter import DualAnnouncementFilter
+        from services.monitor.hkex_official_filter import HKEXOfficialFilter
 
         # 测试API连接
         logger.info("📡 测试API连接...")
@@ -258,20 +256,22 @@ async def run_test_mode():
         logger.info(f"✅ API测试成功，获取到 {len(announcements)} 条公告")
 
         # 测试过滤功能
-        logger.info("🔍 测试过滤功能...")
-        filter_config = {'realtime_monitoring': {
-            'filtering': {'stock_filter_enabled': True, 'type_filter_enabled': True,
-                          'excluded_categories': ['翌日披露報表', '展示文件'], 'included_keywords': []}}}
+        logger.info("🔍 测试HKEX官方分类过滤功能...")
 
-        test_stocks = {'00700', '01810', '09988'}
-        dual_filter = DualAnnouncementFilter(test_stocks, filter_config)
+        # 加载配置
+        with open('config.yaml', 'r', encoding='utf-8') as f:
+            config = yaml.safe_load(f)
 
-        # 使用模拟数据测试
-        mock_data = [{'STOCK_CODE': '00700.HK', 'TITLE': '测试公告', 'LONG_TEXT': '通告及告示'},
-                     {'STOCK_CODE': '00001.HK', 'TITLE': '排除公告', 'LONG_TEXT': '翌日披露報表'}]
+        hkex_filter = HKEXOfficialFilter(config)
+        await hkex_filter.initialize()
 
-        filtered = await dual_filter.filter_announcements(mock_data)
-        logger.info(f"✅ 过滤测试成功: {len(mock_data)} → {len(filtered)} 条")
+        # 使用前面获取的真实数据测试
+        if announcements:
+            test_sample = announcements[:5]  # 测试前5条公告
+            filtered = await hkex_filter.filter_announcements(test_sample)
+            logger.info(f"✅ HKEX官方分类过滤测试成功: {len(test_sample)} → {len(filtered)} 条")
+        else:
+            logger.warning("⚠️ 无公告数据可供测试过滤功能")
 
         logger.info("🎉 所有测试通过！系统运行正常")
 

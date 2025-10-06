@@ -213,26 +213,68 @@ class MilvusCollectionManager:
                     description="文档标题"
                 ),
 
-                # HKEX官方分类代码 (新增)
+                # HKEX官方3级分类系统 (更新：与ClickHouse schema保持一致)
                 FieldSchema(
-                    name="hkex_t1_code",
+                    name="hkex_level1_code",
                     dtype=DataType.VARCHAR,
-                    max_length=10,
+                    max_length=20,
                     description="HKEX 1级分类代码"
                 ),
 
                 FieldSchema(
-                    name="hkex_t2_code",
+                    name="hkex_level1_name",
                     dtype=DataType.VARCHAR,
-                    max_length=10,
-                    description="HKEX 2级/3级分类代码"
+                    max_length=500,
+                    description="HKEX 1级分类名称"
                 ),
 
                 FieldSchema(
-                    name="hkex_category_name",
+                    name="hkex_level2_code",
                     dtype=DataType.VARCHAR,
-                    max_length=200,
-                    description="HKEX分类名称"
+                    max_length=20,
+                    description="HKEX 2级分类代码"
+                ),
+
+                FieldSchema(
+                    name="hkex_level2_name",
+                    dtype=DataType.VARCHAR,
+                    max_length=500,
+                    description="HKEX 2级分类名称"
+                ),
+
+                FieldSchema(
+                    name="hkex_level3_code",
+                    dtype=DataType.VARCHAR,
+                    max_length=20,
+                    description="HKEX 3级分类代码"
+                ),
+
+                FieldSchema(
+                    name="hkex_level3_name",
+                    dtype=DataType.VARCHAR,
+                    max_length=500,
+                    description="HKEX 3级分类名称"
+                ),
+
+                # HKEX分类元数据字段 (支持6种搜索类型)
+                FieldSchema(
+                    name="hkex_classification_confidence",
+                    dtype=DataType.FLOAT,
+                    description="HKEX分类置信度"
+                ),
+
+                FieldSchema(
+                    name="hkex_full_path",
+                    dtype=DataType.VARCHAR,
+                    max_length=1000,
+                    description="HKEX完整分类路径"
+                ),
+
+                FieldSchema(
+                    name="hkex_classification_method",
+                    dtype=DataType.VARCHAR,
+                    max_length=50,
+                    description="分类方法标识"
                 ),
                 
                 FieldSchema(
@@ -342,20 +384,33 @@ class MilvusCollectionManager:
             
             logger.info("✅ 向量索引创建成功")
             
-            # v3标量字段索引 - 添加新字段索引
+            # v3标量字段索引 - 支持6种搜索类型
             scalar_indexes = [
-                # 基础业务字段
+                # 基础业务字段 (Range Search)
                 ("stock_code", {}),
                 ("document_type", {}),
                 ("chunk_type", {}),
                 ("doc_id", {}),
                 ("chunk_id", {}),
-                
-                # v3新增关键字段索引
+
+                # v3关键字段索引 (Range Search + Aggregation Search)
                 ("publish_date", {}),     # 时间范围查询
                 ("importance_score", {}), # 质量排序
                 ("page_number", {}),      # 页码定位
-                ("chunk_length", {})      # 长度过滤
+                ("chunk_length", {}),     # 长度过滤
+
+                # HKEX 3级分类索引 (Range Search + Aggregation Search + Text Search)
+                ("hkex_level1_code", {}),        # 1级分类代码范围查询
+                ("hkex_level1_name", {}),        # 1级分类名称文本搜索
+                ("hkex_level2_code", {}),        # 2级分类代码范围查询
+                ("hkex_level2_name", {}),        # 2级分类名称文本搜索
+                ("hkex_level3_code", {}),        # 3级分类代码范围查询
+                ("hkex_level3_name", {}),        # 3级分类名称文本搜索
+
+                # HKEX分类元数据索引 (Multi-Vector Search + Hybrid Search)
+                ("hkex_classification_confidence", {}),  # 置信度范围查询
+                ("hkex_full_path", {}),                   # 完整路径文本搜索
+                ("hkex_classification_method", {})        # 分类方法聚合查询
             ]
             
             for field_name, params in scalar_indexes:
@@ -453,7 +508,71 @@ class MilvusCollectionManager:
                     max_length=1000,
                     description="文档标题"
                 ),
-                
+
+                # HKEX官方3级分类系统 (与主方法保持一致)
+                FieldSchema(
+                    name="hkex_level1_code",
+                    dtype=DataType.VARCHAR,
+                    max_length=20,
+                    description="HKEX 1级分类代码"
+                ),
+
+                FieldSchema(
+                    name="hkex_level1_name",
+                    dtype=DataType.VARCHAR,
+                    max_length=500,
+                    description="HKEX 1级分类名称"
+                ),
+
+                FieldSchema(
+                    name="hkex_level2_code",
+                    dtype=DataType.VARCHAR,
+                    max_length=20,
+                    description="HKEX 2级分类代码"
+                ),
+
+                FieldSchema(
+                    name="hkex_level2_name",
+                    dtype=DataType.VARCHAR,
+                    max_length=500,
+                    description="HKEX 2级分类名称"
+                ),
+
+                FieldSchema(
+                    name="hkex_level3_code",
+                    dtype=DataType.VARCHAR,
+                    max_length=20,
+                    description="HKEX 3级分类代码"
+                ),
+
+                FieldSchema(
+                    name="hkex_level3_name",
+                    dtype=DataType.VARCHAR,
+                    max_length=500,
+                    description="HKEX 3级分类名称"
+                ),
+
+                # HKEX分类元数据字段
+                FieldSchema(
+                    name="hkex_classification_confidence",
+                    dtype=DataType.FLOAT,
+                    description="HKEX分类置信度"
+                ),
+
+                FieldSchema(
+                    name="hkex_full_path",
+                    dtype=DataType.VARCHAR,
+                    max_length=1000,
+                    description="HKEX完整分类路径"
+                ),
+
+                FieldSchema(
+                    name="hkex_classification_method",
+                    dtype=DataType.VARCHAR,
+                    max_length=50,
+                    description="分类方法标识"
+                ),
+
                 # 内容字段
                 FieldSchema(
                     name="text_content",

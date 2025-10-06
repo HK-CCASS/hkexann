@@ -551,7 +551,7 @@ class AnnouncementMonitor:
                     pdf_path = await self._find_downloaded_pdf(ann)
                     
                     if pdf_path and pdf_path.exists():
-                        result = await self._process_pdf_file(pdf_path, pipeline, pipeline_config)
+                        result = await self._process_pdf_file(pdf_path, pipeline, pipeline_config, ann)
                         
                         process_duration = time.time() - process_start
                         if result and result.get('success'):
@@ -601,7 +601,8 @@ class AnnouncementMonitor:
         
         return None
     
-    async def _process_pdf_file(self, pdf_path: Path, pipeline, pipeline_config: Dict[str, Any]) -> Dict[str, Any]:
+    async def _process_pdf_file(self, pdf_path: Path, pipeline, pipeline_config: Dict[str, Any],
+                               announcement: Optional['AnnouncementInfo'] = None) -> Dict[str, Any]:
         """处理单个PDF文件"""
         try:
             # 根据配置决定处理步骤
@@ -618,7 +619,24 @@ class AnnouncementMonitor:
             
             # PDF解析
             if parsing_enabled:
-                parsing_result = await pipeline.process_single_document(pdf_path)
+                # 构建包含HKEX分类信息的metadata
+                metadata = None
+                if announcement and hasattr(announcement, '__dict__'):
+                    # 从announcement对象中提取HKEX分类信息
+                    ann_dict = announcement.__dict__ if hasattr(announcement, '__dict__') else {}
+                    metadata = {
+                        'hkex_level1_code': ann_dict.get('hkex_level1_code', ''),
+                        'hkex_level1_name': ann_dict.get('hkex_level1_name', ''),
+                        'hkex_level2_code': ann_dict.get('hkex_level2_code', ''),
+                        'hkex_level2_name': ann_dict.get('hkex_level2_name', ''),
+                        'hkex_level3_code': ann_dict.get('hkex_level3_code', ''),
+                        'hkex_level3_name': ann_dict.get('hkex_level3_name', ''),
+                        'hkex_full_path': ann_dict.get('hkex_full_path', ''),
+                        'hkex_classification_confidence': ann_dict.get('hkex_classification_confidence', 0.0),
+                        'hkex_classification_method': ann_dict.get('hkex_classification_method', 'hkex_official')
+                    }
+
+                parsing_result = await pipeline.process_single_document(pdf_path, metadata)
                 result['parsing_result'] = parsing_result
                 
                 if not parsing_result.get('success'):

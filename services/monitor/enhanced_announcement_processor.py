@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 try:
     # 尝试相对导入（当作为模块使用时）
     from .api_monitor import HKEXAPIMonitor
-    from .dual_filter import DualAnnouncementFilter
+    from .hkex_official_filter import HKEXOfficialFilter
     from .stock_discovery import StockDiscoveryManager
     from .downloader_integration import RealtimeDownloaderWrapper
     from .realtime_vector_processor import RealtimeVectorProcessor
@@ -27,7 +27,7 @@ try:
 except ImportError:
     # 回退到绝对导入（当直接运行时）
     from services.monitor.api_monitor import HKEXAPIMonitor
-    from services.monitor.dual_filter import DualAnnouncementFilter
+    from services.monitor.hkex_official_filter import HKEXOfficialFilter
     from services.monitor.stock_discovery import StockDiscoveryManager
     from services.monitor.downloader_integration import RealtimeDownloaderWrapper
     from services.monitor.realtime_vector_processor import RealtimeVectorProcessor
@@ -229,7 +229,7 @@ class EnhancedAnnouncementProcessor:
             self.vector_processor = RealtimeVectorProcessor(self.config)
             
             # 双重过滤器需要在获取股票列表后初始化
-            self.dual_filter = None
+            self.hkex_official_filter = None
             
             logger.info("✅ 所有核心组件初始化完成")
             
@@ -257,12 +257,11 @@ class EnhancedAnnouncementProcessor:
             logger.info("🔍 执行首次股票同步...")
             await self._sync_monitored_stocks()
             
-            # 3. 初始化双重过滤器
-            logger.info("🔬 初始化双重过滤器...")
-            self.dual_filter = DualAnnouncementFilter(
-                self.monitored_stocks, 
-                self.config
-            )
+            # 3. 初始化简化过滤器
+            logger.info("🔬 初始化简化过滤器...")
+            self.hkex_official_filter = HKEXOfficialFilter(self.config)
+            # 异步初始化HKEX官方分类器
+            await self.hkex_official_filter.initialize()
             
             # 4. 初始化API监听器
             logger.info("📡 初始化API监听器...")
@@ -276,7 +275,7 @@ class EnhancedAnnouncementProcessor:
             historical_config['announcement_categories'] = self.config.get('announcement_categories', {})
             self.historical_processor = CorrectedHistoricalProcessor(
                 hkex_downloader=self.downloader.get_underlying_downloader(),
-                dual_filter=self.dual_filter,
+                simple_filter=self.hkex_official_filter,
                 vectorizer=self.vector_processor,
                 monitored_stocks=self.monitored_stocks,
                 config=historical_config
@@ -324,7 +323,7 @@ class EnhancedAnnouncementProcessor:
             # 创建处理器实例
             self.new_stock_historical_processor = CorrectedHistoricalProcessor(
                 hkex_downloader=self.downloader.get_underlying_downloader(),
-                dual_filter=self.dual_filter,
+                simple_filter=self.hkex_official_filter,
                 vectorizer=self.vector_processor,
                 monitored_stocks=set(),  # 初始为空，动态设置
                 config=historical_config
@@ -356,10 +355,8 @@ class EnhancedAnnouncementProcessor:
                 if new_count > 0 or removed_count > 0:
                     logger.info(f"📈 股票列表变化: 新增 {new_count}, 移除 {removed_count}")
                     
-                    # 更新双重过滤器的股票列表
-                    if self.dual_filter:
-                        self.dual_filter.update_monitored_stocks(new_stocks)
-                        logger.info("🔬 已更新过滤器股票列表")
+                    # 🏷️ HKEX官方分类器不依赖股票列表，无需更新
+                    logger.info("🏷️ 使用HKEX官方分类器，无需更新股票列表")
             
             # 更新本地股票列表
             self.monitored_stocks = new_stocks
@@ -615,32 +612,28 @@ class EnhancedAnnouncementProcessor:
                     await stock_sync_task
                     batch_stats["stock_sync_completed"] = True
                     logger.info("✅ 股票同步已完成")
+
+                # 🔧 修复：即使无公告也要更新时间戳，避免"首次运行"重复
+                if hasattr(self.api_monitor, 'mark_announcements_processed'):
+                    try:
+                        self.api_monitor.mark_announcements_processed([])  # 空列表，只更新时间戳
+                        logger.debug("✅ 已更新时间戳（无新公告）")
+                    except Exception as mark_error:
+                        logger.warning(f"⚠️ 更新时间戳失败: {mark_error}")
                 return batch_stats
             
             logger.info(f"📥 获取到 {len(announcements)} 条公告")
             
-            # 2. 🚀 修复：创建临时过滤器使用快照股票列表（避免过滤器状态不一致）
-            logger.info("🔬 执行双重过滤...")
-            if not self.dual_filter:
-                logger.error("❌ 双重过滤器未初始化")
+            # 2. 🚀 使用HKEX官方分类过滤器进行过滤
+            logger.info("🏷️ 执行HKEX官方分类过滤...")
+            if not self.hkex_official_filter:
+                logger.error("❌ HKEX官方分类过滤器未初始化")
                 return batch_stats
             
-            # 🚀 关键修复：为本次批处理创建临时过滤器状态
-            # 保存当前过滤器的股票列表状态
-            original_monitored_stocks = self.dual_filter.monitored_stocks.copy()
-            
-            # 临时使用快照股票列表进行过滤
-            self.dual_filter.monitored_stocks = current_stock_snapshot
-            logger.debug(f"🔄 临时应用股票快照到过滤器: {len(current_stock_snapshot)} 只股票")
-            
-            try:
-                filtered_announcements = await self.dual_filter.filter_announcements(announcements)
-                batch_stats["announcements_filtered"] = len(filtered_announcements)
-                self.stats.total_announcements_filtered += len(filtered_announcements)
-            finally:
-                # 🚀 重要：恢复过滤器的原始状态（防止状态污染）
-                self.dual_filter.monitored_stocks = original_monitored_stocks
-                logger.debug("🔄 已恢复过滤器原始股票列表")
+            # 🏷️ 使用HKEX官方分类过滤器（无需股票快照管理）
+            filtered_announcements = await self.hkex_official_filter.filter_announcements(announcements)
+            batch_stats["announcements_filtered"] = len(filtered_announcements)
+            self.stats.total_announcements_filtered += len(filtered_announcements)
             
             if not filtered_announcements:
                 logger.info("ℹ️  过滤后无相关公告")
@@ -650,6 +643,16 @@ class EnhancedAnnouncementProcessor:
                     await stock_sync_task
                     batch_stats["stock_sync_completed"] = True
                     logger.info("✅ 股票同步已完成")
+
+                # 🔧 修复：即使过滤后无公告也要更新时间戳，避免"首次运行"重复
+                if hasattr(self.api_monitor, 'mark_announcements_processed'):
+                    try:
+                        # 即使没有公告通过过滤，也要将原始公告ID记录，更新时间戳
+                        original_ids = [ann.get('_announcement_id') for ann in announcements if ann.get('_announcement_id')]
+                        self.api_monitor.mark_announcements_processed(original_ids)
+                        logger.debug(f"✅ 已更新时间戳（过滤后无相关公告，但已标记 {len(original_ids)} 个原始公告）")
+                    except Exception as mark_error:
+                        logger.warning(f"⚠️ 更新时间戳失败: {mark_error}")
                 return batch_stats
             
             logger.info(f"✅ 过滤后得到 {len(filtered_announcements)} 条相关公告")
@@ -766,14 +769,30 @@ class EnhancedAnnouncementProcessor:
                         result["file_path"] = download_result.get('file_path')
                         result["file_size"] = download_result.get('file_size', 0)
                         
+                        # 构建包含HKEX分类信息的metadata
+                        metadata = {
+                            "announcement_id": announcement.get('ID'),
+                            "stock_code": announcement.get('STOCK_CODE'),
+                            "source": "enhanced_processor"
+                        }
+
+                        # 添加HKEX分类信息（如果存在）
+                        hkex_fields = [
+                            'hkex_level1_code', 'hkex_level1_name',
+                            'hkex_level2_code', 'hkex_level2_name',
+                            'hkex_level3_code', 'hkex_level3_name',
+                            'hkex_full_path', 'hkex_classification_confidence',
+                            'hkex_classification_method'
+                        ]
+
+                        for field in hkex_fields:
+                            if field in announcement:
+                                metadata[field] = announcement[field]
+
                         # 向量化处理
                         vector_result = await self.vector_processor.process_announcement_pdf(
                             download_result['file_path'],
-                            {
-                                "announcement_id": announcement.get('ID'),
-                                "stock_code": announcement.get('STOCK_CODE'),
-                                "source": "enhanced_processor"
-                            }
+                            metadata
                         )
                         
                         if vector_result.get('success'):
@@ -909,7 +928,7 @@ class EnhancedAnnouncementProcessor:
             "component_status": {
                 "stock_discovery": bool(self.stock_discovery),
                 "api_monitor": bool(self.api_monitor),
-                "dual_filter": bool(self.dual_filter),
+                "hkex_official_filter": bool(self.hkex_official_filter),
                 "downloader": bool(self.downloader),
                 "vector_processor": bool(self.vector_processor),
                 # 🆕 新增股票历史处理器状态
@@ -987,13 +1006,11 @@ async def test_enhanced_processor():
             'max_retries': 3
         },
         
-        # 双重过滤配置
-        'dual_filter': {
-            'enable_stock_filter': True,
-            'enable_type_filter': True,
-            'announcement_keywords': [
-                '供股', '配售', '合股', '股份拆细', '可换股债券'
-            ]
+        # HKEX官方分类过滤配置
+        'classification': {
+            'use_hkex_official': True,
+            'hkex_confidence_threshold': 0.6,
+            'fallback_to_keyword': False  # 暂时禁用关键字分类回退
         },
         
         # ClickHouse股票发现配置

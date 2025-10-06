@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a comprehensive Hong Kong Stock Exchange (HKEX) announcement downloader and monitoring system. The project has undergone a major architectural refactoring (v3.0) and now consists of three main components:
+This is a comprehensive Hong Kong Stock Exchange (HKEX) announcement downloader and monitoring system. The project consists of three main architectural components:
 
-1. **Modularized Architecture** (`legacy/`) - Clean architecture implementation of the downloader (v3.0, refactored 2025-09-13)
+1. **Unified Downloader System** (`unified_downloader/`) - Modern modular architecture with enterprise features
 2. **Enhanced Monitoring System** (`start_enhanced_monitor.py` + `services/`) - Real-time monitoring with enterprise-grade data processing
 3. **Original Downloader** (`main.py`) - Legacy standalone tool (2,100+ lines, preserved for backward compatibility)
 
@@ -14,18 +14,17 @@ This is a comprehensive Hong Kong Stock Exchange (HKEX) announcement downloader 
 
 ### Core Components
 
-#### New Modular Architecture (Recommended)
-- **legacy/** - Clean architecture implementation with 31 modular files:
-  - `main_cli.py` - New entry point, fully compatible with original CLI
-  - `presentation/` - CLI and configuration layer
-  - `business/` - Domain services (announcement, download, stock info, classification)
-  - `data_access/` - Repository pattern implementation
-  - `infrastructure/` - Technical implementation (database, DI, error handling, process management)
+#### Unified Downloader System (Modern Architecture)
+- **unified_downloader/** - Enterprise-grade modular system:
+  - `config/unified_config.py` - Unified configuration management with 8 preset templates
+  - `file_manager/unified_file_manager.py` - Smart file organization with 5 directory structures
+  - `core/downloader_abstract.py` - Pluggable download strategies and rate limiting
+  - `adapters/legacy_adapter.py` - Backward compatibility with existing systems
 
 #### Legacy Components
 - **main.py** (2,100+ lines) - Original monolithic implementation (preserved for compatibility)
-- **services/** - Modular microservices architecture (60 Python files):
-  - `monitor/` - Real-time API monitoring (18,000+ lines across multiple files)  
+- **services/** - Modular microservices architecture (56 Python files, 29,000+ lines):
+  - `monitor/` - Real-time API monitoring with dual-stage filtering
   - `data_loader/` - Database integration (ClickHouse, MySQL)
   - `milvus/` - Vector database for semantic search
   - `document_processor/` - PDF processing and text extraction
@@ -44,21 +43,18 @@ ClickHouse    Stock Filter    PDF Download      Text Extraction     Milvus DB
 
 ### Running the System
 
-**New Modular Architecture (Recommended):**
+**Unified Downloader System (Recommended for new development):**
 ```bash
-# Basic usage - fully compatible with original CLI
-python legacy/main_cli.py -s 00700 --start 2024-01-01 --end today
+# See unified_downloader/README.md for detailed usage
+from unified_downloader.config.unified_config import ConfigManager
+from unified_downloader.adapters.legacy_adapter import UnifiedAPIAdapter
 
-# Async mode (recommended for performance)
-python legacy/main_cli.py -s 00700 --async
-
-# Configuration-based tasks
-python legacy/main_cli.py --check-config
-python legacy/main_cli.py --list-tasks
-python legacy/main_cli.py --run-task "task_name"
+# Use legacy-compatible interface
+adapter = UnifiedAPIAdapter('config.yaml')
+main_adapter = adapter.get_adapter('main')
 ```
 
-**Original Downloader (Backward Compatibility):**
+**Original Downloader (Main CLI):**
 ```bash
 # Basic usage
 python main.py -s 00700 --start 2024-01-01 --end today
@@ -69,7 +65,7 @@ python main.py -s 00700 --async
 
 **Enhanced Monitoring System:**
 ```bash
-# Start real-time monitoring
+# Start real-time monitoring (primary production use)
 python start_enhanced_monitor.py
 
 # Test mode with detailed output
@@ -79,7 +75,7 @@ python start_enhanced_monitor.py -t
 python start_enhanced_monitor.py -c custom_config.yaml
 
 # With forced async mode
-HKEX_FORCE_ASYNC=true python main.py --config config.yaml
+HKEX_FORCE_ASYNC=true python start_enhanced_monitor.py
 ```
 
 **Manual Historical Backfill:**
@@ -106,6 +102,15 @@ python manual_historical_backfill.py -s 00700 -d 7 --dry-run
 python manual_historical_backfill.py -s 00700 -d 7 --output results.json
 ```
 
+**Async Downloader (Alternative CLI):**
+```bash
+# High-performance async downloading
+python async_downloader.py -s 00700 --start 2024-01-01 --end today
+
+# HKEX Classification Processing
+python process_hkex_classification.py
+```
+
 ### Database Operations
 ```bash
 # Test database connectivity
@@ -116,15 +121,6 @@ python main.py --db-stocks
 
 # Custom database query
 python main.py --db-query "SELECT stockCode FROM issue WHERE status = 'normal'"
-```
-
-### Daemon Mode
-```bash
-python main.py --daemon-start
-python main.py --daemon-status
-python main.py --daemon-stop
-python main.py --daemon-restart
-python main.py --daemon-test
 ```
 
 ### Development and Testing
@@ -141,9 +137,6 @@ python main.py --list-tasks
 # Run specific task by name
 python main.py --run-task "task_name"
 
-# Test daemon control functionality
-python daemon_control.py test
-
 # Verify configuration files
 python tools/verify_configuration.py
 
@@ -156,13 +149,9 @@ python tools/run_deduplication.py
 
 ### Code Quality and Testing
 ```bash
-# Currently no formal testing framework configured
-# When adding tests, create them in tests/ directory following pytest conventions
-# No linting or formatting tools currently configured in project
-
-# Available test files for integration testing:
-python tests/test_new_stock_historical_processing.py
-python tests/test_integration_new_stock_historical.py
+# Currently no formal pytest framework configured
+# Tests are standalone executable Python files
+# When adding tests, create them in tests/ directory following the existing pattern
 ```
 
 ## Configuration
@@ -215,14 +204,13 @@ The project follows multiple architectural patterns:
 
 ### File Organization
 
-- **Root Directory**: Main executables (`main.py`, `start_enhanced_monitor.py`, `daemon_control.py`)
-- **legacy/** (NEW v3.0): Clean architecture implementation
-  - `main_cli.py`: New modular entry point
-  - `presentation/`: CLI, formatters, configuration adapters
-  - `business/services/`: Domain services (announcement, download, stock info, classification)
-  - `data_access/`: Repository pattern implementations
-  - `infrastructure/`: Technical concerns (database, DI, error handling, process management)
-- **services/**: Modular microservices (60 files across 6 major modules)
+- **Root Directory**: Main executables (`main.py`, `start_enhanced_monitor.py`, `async_downloader.py`, `manual_historical_backfill.py`)
+- **unified_downloader/**: Modern modular architecture system
+  - `config/unified_config.py`: Configuration management with 8 preset templates
+  - `file_manager/unified_file_manager.py`: Smart file organization
+  - `core/downloader_abstract.py`: Download strategies and rate limiting
+  - `adapters/legacy_adapter.py`: Backward compatibility adapters
+- **services/**: Microservices architecture (monitoring system)
   - `monitor/`: Core monitoring system with 20+ files
   - `data_loader/`: Database integration utilities
   - `document_processor/`: PDF processing pipeline
@@ -231,11 +219,6 @@ The project follows multiple architectural patterns:
   - `storage/`: File management utilities
 - **config/**: Configuration management (`settings.py`)
 - **docs/**: Comprehensive documentation
-  - `架构文档.md`: Complete architecture documentation
-  - `迁移指南.md`: Migration guide from main.py to modular architecture
-  - `使用说明.md`: User manual for CLI and features
-  - `开发指南.md`: Developer guide for extending the system
-  - `测试文档.md`: Testing strategy and implementation
 - **sql/**: Database schema and queries
 - **tools/**: Utility tools and scripts
   - `clickhouse_deduplication_tool.py`: ClickHouse data deduplication
@@ -269,37 +252,39 @@ The project follows multiple architectural patterns:
 - **ML/AI**: SiliconFlow API for embeddings and LLM services
 - **Document Processing**: PDF text extraction and vectorization pipeline
 - **Configuration**: YAML-based configuration with environment variable substitution
-- **Scheduling**: Schedule library for daemon mode, psutil for process management
+- **Process Management**: psutil for system and resource monitoring
 
 ### System Components Comparison
 
 | Component | Lines of Code | Architecture | Use Case |
 |-----------|--------------|--------------|----------|
-| **legacy/** (v3.0) | ~2,100 (modularized) | Clean Architecture | New development, maintainable code |
-| **main.py** | 2,100+ (monolithic) | Single file | Backward compatibility only |
-| **services/monitor/** | 18,000+ | Microservices | Real-time monitoring |
+| **unified_downloader/** | ~1,000+ (modular) | Enterprise Architecture | New development, production features |
+| **main.py** | 2,100+ (monolithic) | Single file | Backward compatibility, standalone use |
+| **services/monitor/** | 29,000+ | Microservices | Real-time monitoring, production system |
+| **async_downloader.py** | 450+ | Async Single file | High-performance downloading |
 
-#### Modular Architecture (legacy/) - RECOMMENDED
-The new clean architecture implementation provides:
-- **Separation of Concerns**: Each module has a single responsibility
-- **Testability**: All components can be tested in isolation
-- **Maintainability**: Changes are localized to specific modules
-- **Extensibility**: New features can be added without modifying existing code
-- **100% CLI Compatibility**: Drop-in replacement for main.py
+#### Unified Downloader (unified_downloader/) - RECOMMENDED FOR NEW FEATURES
+The modern enterprise architecture provides:
+- **8 Preset Configuration Templates**: From minimal to enterprise compliance
+- **5 File Organization Strategies**: Flat, by-stock, by-date, by-category, hierarchical
+- **Pluggable Download Strategies**: Rate limiting, proxy support, concurrent control
+- **100% Backward Compatibility**: Adapters for existing systems
+- **Enterprise Features**: Smart classification, symlink organization, performance monitoring
 
 #### Monitoring System (services/monitor/)
 The monitoring system is the enterprise-grade component with:
-- Real-time API polling every 5 minutes
+- Real-time API polling every 60 seconds
 - Dual-stage filtering (stocks + announcement types)
 - Enterprise health monitoring
 - Vector processing pipeline
 - Automatic error recovery
 
 #### Development Priority
-1. **New Features**: Implement in `legacy/` modular architecture
-2. **Bug Fixes**: Apply to both `legacy/` and `main.py` if affecting both
+1. **New Features**: Implement in `unified_downloader/` modular architecture
+2. **Bug Fixes**: Apply to `main.py` for backward compatibility, consider `unified_downloader/` for modern features
 3. **Monitoring**: Continue enhancing `services/monitor/` independently
-4. **Migration**: Gradually move functionality from `main.py` to `legacy/`
+4. **Performance**: Use `async_downloader.py` for high-volume tasks
+5. **Migration**: Gradually adopt `unified_downloader/` patterns for new development
 
 ## Key Features
 

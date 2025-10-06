@@ -26,7 +26,7 @@ sys.path.append(str(Path(__file__).parent))
 # 导入现有组件
 from services.monitor.enhanced_announcement_processor import EnhancedAnnouncementProcessor
 from services.monitor.data_flow.corrected_historical_processor import CorrectedHistoricalProcessor
-from services.monitor.dual_filter import DualAnnouncementFilter
+from services.monitor.hkex_official_filter import HKEXOfficialFilter
 from services.monitor.downloader_integration import RealtimeDownloaderWrapper
 from services.monitor.realtime_vector_processor import RealtimeVectorProcessor
 from start_enhanced_monitor import load_config, substitute_env_vars
@@ -92,9 +92,10 @@ class ManualHistoricalBackfillProcessor:
             logger.info("🧠 初始化向量化处理器...")
             self.vector_processor = RealtimeVectorProcessor(self.config)
             
-            # 3. 初始化双重过滤器（使用空股票列表，后续动态设置）
-            logger.info("🔬 初始化双重过滤器...")
-            self.dual_filter = DualAnnouncementFilter(set(), self.config)
+            # 3. 初始化HKEX官方过滤器
+            logger.info("🔬 初始化HKEX官方过滤器...")
+            self.hkex_filter = HKEXOfficialFilter(self.config)
+            await self.hkex_filter.initialize()
             
             # 4. 初始化历史处理器
             logger.info("📚 初始化历史处理器...")
@@ -106,7 +107,7 @@ class ManualHistoricalBackfillProcessor:
             
             self.historical_processor = CorrectedHistoricalProcessor(
                 hkex_downloader=self.downloader.get_underlying_downloader(),
-                dual_filter=self.dual_filter,
+                simple_filter=self.hkex_filter,
                 vectorizer=self.vector_processor,
                 monitored_stocks=set(),  # 动态设置
                 config=historical_config

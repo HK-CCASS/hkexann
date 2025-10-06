@@ -47,24 +47,24 @@ class CorrectedHistoricalProcessor:
     3. 分批处理避免API过载和资源竞争
     """
     
-    def __init__(self, 
+    def __init__(self,
                  hkex_downloader,  # 使用原项目的HKEXDownloader
-                 dual_filter, 
+                 simple_filter,
                  vectorizer,
                  monitored_stocks: Set[str],
                  config: Dict[str, Any]):
         """
         初始化修复后的历史批量处理器
-        
+
         Args:
             hkex_downloader: 原项目的HKEXDownloader实例 (使用titleSearchServlet.do)
-            dual_filter: 双重过滤器
+            simple_filter: 简化过滤器
             vectorizer: 向量化器
             monitored_stocks: 监控股票集合
             config: 配置信息
         """
         self.hkex_downloader = hkex_downloader
-        self.dual_filter = dual_filter
+        self.simple_filter = simple_filter
         self.vectorizer = vectorizer
         self.monitored_stocks = monitored_stocks
         self.config = config
@@ -206,7 +206,7 @@ class CorrectedHistoricalProcessor:
                 if batch_idx < len(stock_batches):
                     logger.info(f"⏸️ 批次间休息 {self.api_delay} 秒...")
                     await asyncio.sleep(self.api_delay)
-            
+            print(f"公告数据：{all_announcements}")
             logger.info(f"📊 历史公告收集完成: 总计 {len(all_announcements)} 条")
             self.processing_stats['total_announcements_found'] = len(all_announcements)
             
@@ -380,7 +380,7 @@ class CorrectedHistoricalProcessor:
         """
         try:
             # 使用双重过滤器
-            relevant_announcements = await self.dual_filter.filter_announcements(announcements)
+            relevant_announcements = await self.simple_filter.filter_announcements(announcements)
             return relevant_announcements
         except Exception as e:
             logger.error(f"过滤公告失败: {e}")
@@ -559,7 +559,7 @@ class CorrectedHistoricalProcessor:
 
 
 # 便捷函数
-async def process_historical_with_correct_api(hkex_downloader, dual_filter, vectorizer, 
+async def process_historical_with_correct_api(hkex_downloader, simple_filter, vectorizer, 
                                             monitored_stocks: Set[str], 
                                             config: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -567,7 +567,7 @@ async def process_historical_with_correct_api(hkex_downloader, dual_filter, vect
     
     Args:
         hkex_downloader: 原项目的HKEXDownloader实例
-        dual_filter: 双重过滤器
+        simple_filter: 简化过滤器
         vectorizer: 向量化器  
         monitored_stocks: 监控股票集合
         config: 配置信息
@@ -576,7 +576,7 @@ async def process_historical_with_correct_api(hkex_downloader, dual_filter, vect
         Dict[str, Any]: 处理结果
     """
     processor = CorrectedHistoricalProcessor(
-        hkex_downloader, dual_filter, vectorizer, monitored_stocks, config
+        hkex_downloader, simple_filter, vectorizer, monitored_stocks, config
     )
     
     if await processor.is_first_run():

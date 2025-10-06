@@ -374,6 +374,19 @@ class DocumentVectorizer:
                     'announcement_id': getattr(doc_metadata, 'announcement_id', ''),
                     'source': getattr(doc_metadata, 'source', 'vectorizer')
                 }
+
+                # 添加HKEX分类字段（如果存在）
+                hkex_fields = [
+                    'hkex_level1_code', 'hkex_level1_name',
+                    'hkex_level2_code', 'hkex_level2_name',
+                    'hkex_level3_code', 'hkex_level3_name',
+                    'hkex_full_path', 'hkex_classification_confidence',
+                    'hkex_classification_method'
+                ]
+
+                for field in hkex_fields:
+                    if hasattr(doc_metadata, field):
+                        metadata_dict[field] = getattr(doc_metadata, field, '')
                 
                 # 带重试的存储操作，增强错误恢复能力
                 try:
@@ -640,10 +653,21 @@ class DocumentVectorizer:
                     "chunk_length": chunk.text_length,
                     "importance_score": importance_score,
 
-                    # HKEX分类字段 - 确保不为None
-                    "hkex_t1_code": doc_metadata.hkex_t1_code or "",
-                    "hkex_t2_code": doc_metadata.hkex_t2_code or "",
-                    "hkex_category_name": doc_metadata.hkex_category_name or ""
+                    # HKEX官方3级分类字段 - 与ClickHouse schema保持一致
+                    "hkex_level1_code": getattr(doc_metadata, 'hkex_level1_code', "") or "",
+                    "hkex_level1_name": getattr(doc_metadata, 'hkex_level1_name', "") or "",
+                    "hkex_level2_code": getattr(doc_metadata, 'hkex_level2_code', "") or "",
+                    "hkex_level2_name": getattr(doc_metadata, 'hkex_level2_name', "") or "",
+                    "hkex_level3_code": getattr(doc_metadata, 'hkex_level3_code', "") or "",
+                    "hkex_level3_name": getattr(doc_metadata, 'hkex_level3_name', "") or "",
+                    "hkex_classification_confidence": getattr(doc_metadata, 'hkex_classification_confidence', 0.0) or 0.0,
+                    "hkex_full_path": getattr(doc_metadata, 'hkex_full_path', "") or "",
+                    "hkex_classification_method": getattr(doc_metadata, 'hkex_classification_method', 'hkex_official') or "hkex_official",
+
+                    # 关键字分类兼容性字段
+                    "keyword_category": getattr(doc_metadata, 'keyword_category', "") or "",
+                    "keyword_priority": getattr(doc_metadata, 'keyword_priority', 0) or 0,
+                    "keyword_confidence": getattr(doc_metadata, 'keyword_confidence', 0.0) or 0.0
                 }
                 
                 insert_data.append(record)

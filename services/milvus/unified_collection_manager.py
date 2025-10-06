@@ -218,17 +218,32 @@ class UnifiedMilvusManager:
     def get_collection_name(self, collection_type: CollectionType) -> str:
         """
         获取统一的集合名称
-        
+
         Args:
             collection_type: 集合类型
-            
+
         Returns:
             str: 统一的集合名称
         """
         if collection_type not in self.collection_configs:
             raise ValueError(f"未知的集合类型: {collection_type}")
-        
+
         return self.collection_configs[collection_type].name
+
+    def get_collection_type_by_name(self, collection_name: str) -> CollectionType:
+        """
+        根据集合名称获取集合类型
+
+        Args:
+            collection_name: 集合名称
+
+        Returns:
+            CollectionType: 集合类型
+        """
+        for collection_type, config in self.collection_configs.items():
+            if config.name == collection_name:
+                return collection_type
+        raise ValueError(f"未找到集合名称对应的类型: {collection_name}")
 
     async def create_connection(self, connection_name: str = None) -> str:
         """
@@ -526,6 +541,63 @@ class UnifiedMilvusManager:
                 dtype=DataType.VARCHAR,
                 max_length=32,
                 description="更新时间"
+            ),
+
+            # HKEX官方3级分类系统 (更新：与ClickHouse schema保持一致)
+            FieldSchema(
+                name="hkex_level1_code",
+                dtype=DataType.VARCHAR,
+                max_length=20,
+                description="HKEX 1级分类代码"
+            ),
+            FieldSchema(
+                name="hkex_level1_name",
+                dtype=DataType.VARCHAR,
+                max_length=500,
+                description="HKEX 1级分类名称"
+            ),
+            FieldSchema(
+                name="hkex_level2_code",
+                dtype=DataType.VARCHAR,
+                max_length=20,
+                description="HKEX 2级分组代码"
+            ),
+            FieldSchema(
+                name="hkex_level2_name",
+                dtype=DataType.VARCHAR,
+                max_length=500,
+                description="HKEX 2级分组名称"
+            ),
+            FieldSchema(
+                name="hkex_level3_code",
+                dtype=DataType.VARCHAR,
+                max_length=20,
+                description="HKEX 3级分类代码"
+            ),
+            FieldSchema(
+                name="hkex_level3_name",
+                dtype=DataType.VARCHAR,
+                max_length=500,
+                description="HKEX 3级分类名称"
+            ),
+
+            # HKEX分类元数据字段 (支持6种搜索类型)
+            FieldSchema(
+                name="hkex_classification_confidence",
+                dtype=DataType.FLOAT,
+                description="HKEX分类置信度"
+            ),
+            FieldSchema(
+                name="hkex_full_path",
+                dtype=DataType.VARCHAR,
+                max_length=500,
+                description="HKEX完整分类路径"
+            ),
+            FieldSchema(
+                name="hkex_classification_method",
+                dtype=DataType.VARCHAR,
+                max_length=50,
+                description="HKEX分类方法标识"
             )
         ]
         
@@ -554,8 +626,21 @@ class UnifiedMilvusManager:
             
             # 标量字段索引
             scalar_indexes = [
-                "stock_code", "document_type", "chunk_type", 
-                "doc_id", "chunk_id", "publish_date"
+                "stock_code", "document_type", "chunk_type",
+                "doc_id", "chunk_id", "publish_date",
+
+                # HKEX 3级分类索引 (Range Search + Aggregation Search + Text Search)
+                "hkex_level1_code",        # 1级分类代码范围查询
+                "hkex_level1_name",        # 1级分类名称文本搜索
+                "hkex_level2_code",        # 2级分类代码范围查询
+                "hkex_level2_name",        # 2级分类名称文本搜索
+                "hkex_level3_code",        # 3级分类代码范围查询
+                "hkex_level3_name",        # 3级分类名称文本搜索
+
+                # HKEX分类元数据索引 (Multi-Vector Search + Aggregation Search)
+                "hkex_classification_confidence",  # 置信度范围查询
+                "hkex_full_path",                  # 完整路径文本搜索
+                "hkex_classification_method"       # 分类方法聚合查询
             ]
             
             for field_name in scalar_indexes:
@@ -780,22 +865,434 @@ class UnifiedMilvusManager:
             'recent_operations': self.operation_history[-10:] if self.operation_history else []
         }
 
+    # ========================================
+    # 6种搜索功能实现
+    # ========================================
+
+    async def vector_search(self,
+                           collection_name: str,
+                           query_vectors: List[List[float]],
+                           top_k: int = 10,
+                           output_fields: Optional[List[str]] = None,
+                           expr: Optional[str] = None,
+                           search_params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """
+        1. 向量搜索 (Vector Search)
+        基于向量相似度的搜索，适用于语义搜索场景
+        """
+        collection_type = self.get_collection_type_by_name(collection_name)
+        async with self.get_collection(collection_type) as collection:
+            if output_fields is None:
+                output_fields = ["doc_id", "stock_code", "company_name", "text_content", "publish_date", "importance_score"]
+
+            if search_params is None:
+                search_params = {
+                    "metric_type": "COSINE",
+                    "params": {"ef": 128}
+                }
+
+            try:
+                results = collection.search(
+                    data=query_vectors,
+                    anns_field="embedding",
+                    param=search_params,
+                    limit=top_k,
+                    expr=expr,
+                    output_fields=output_fields,
+                    consistency_level="Session"
+                )
+
+                return {
+                    "search_type": "vector",
+                    "total_results": len(results),
+                    "results": [
+                        {
+                            "id": hit.id,
+                            "distance": hit.distance,
+                            "entity": hit.entity.to_dict() if hasattr(hit.entity, 'to_dict') else dict(hit.entity)
+                        } for result in results for hit in result
+                    ],
+                    "search_params": search_params
+                }
+            except Exception as e:
+                logger.error(f"向量搜索失败: {e}")
+                return {"search_type": "vector", "error": str(e), "results": []}
+
+    async def text_search(self,
+                         collection_name: str,
+                         query_text: str,
+                         top_k: int = 10,
+                         output_fields: Optional[List[str]] = None) -> Dict[str, Any]:
+        """
+        2. 文本搜索 (Text Search)
+        基于文本内容的全文搜索
+        """
+        collection_type = self.get_collection_type_by_name(collection_name)
+        async with self.get_collection(collection_type) as collection:
+            if output_fields is None:
+                output_fields = ["doc_id", "stock_code", "company_name", "text_content", "publish_date", "importance_score"]
+
+            try:
+                # 构建文本匹配表达式
+                text_expr = f'text_content like "%{query_text}%"'
+
+                results = collection.query(
+                    expr=text_expr,
+                    output_fields=output_fields,
+                    limit=top_k,
+                    consistency_level="Session"
+                )
+
+                return {
+                    "search_type": "text",
+                    "query_text": query_text,
+                    "total_results": len(results),
+                    "results": results,
+                    "text_expr": text_expr
+                }
+            except Exception as e:
+                logger.error(f"文本搜索失败: {e}")
+                return {"search_type": "text", "error": str(e), "results": []}
+
+    async def hybrid_search(self,
+                           collection_name: str,
+                           query_vector: List[float],
+                           query_text: str,
+                           top_k: int = 10,
+                           vector_weight: float = 0.7,
+                           text_weight: float = 0.3,
+                           output_fields: Optional[List[str]] = None) -> Dict[str, Any]:
+        """
+        3. 混合搜索 (Hybrid Search)
+        结合向量相似度和文本匹配的混合搜索
+        """
+        try:
+            # 执行向量搜索
+            vector_results = await self.vector_search(
+                collection_name=collection_name,
+                query_vectors=[query_vector],
+                top_k=top_k * 2,  # 获取更多结果用于混合排序
+                output_fields=output_fields
+            )
+
+            # 执行文本搜索
+            text_results = await self.text_search(
+                collection_name=collection_name,
+                query_text=query_text,
+                top_k=top_k * 2,
+                output_fields=output_fields
+            )
+
+            # 混合评分
+            hybrid_scores = {}
+
+            # 向量搜索结果评分
+            for result in vector_results.get("results", []):
+                doc_id = result["entity"]["doc_id"]
+                vector_score = 1.0 - result["distance"]  # 距离越小，相似度越高
+                hybrid_scores[doc_id] = {"vector_score": vector_score, "text_score": 0.0, "data": result}
+
+            # 文本搜索结果评分
+            max_text_score = len(text_results.get("results", []))
+            for i, result in enumerate(text_results.get("results", [])):
+                doc_id = result["doc_id"]
+                text_score = (max_text_score - i) / max_text_score  # 排名越前，得分越高
+
+                if doc_id in hybrid_scores:
+                    hybrid_scores[doc_id]["text_score"] = text_score
+                else:
+                    hybrid_scores[doc_id] = {
+                        "vector_score": 0.0,
+                        "text_score": text_score,
+                        "data": {"entity": result}
+                    }
+
+            # 计算混合得分并排序
+            final_results = []
+            for doc_id, scores in hybrid_scores.items():
+                final_score = (scores["vector_score"] * vector_weight +
+                             scores["text_score"] * text_weight)
+
+                result_data = scores["data"]
+                result_data["hybrid_score"] = final_score
+                result_data["vector_score"] = scores["vector_score"]
+                result_data["text_score"] = scores["text_score"]
+
+                final_results.append(result_data)
+
+            # 按混合得分排序并截取前top_k
+            final_results.sort(key=lambda x: x["hybrid_score"], reverse=True)
+            final_results = final_results[:top_k]
+
+            return {
+                "search_type": "hybrid",
+                "query_text": query_text,
+                "vector_weight": vector_weight,
+                "text_weight": text_weight,
+                "total_results": len(final_results),
+                "results": final_results
+            }
+
+        except Exception as e:
+            logger.error(f"混合搜索失败: {e}")
+            return {"search_type": "hybrid", "error": str(e), "results": []}
+
+    async def range_search(self,
+                          collection_name: str,
+                          field_conditions: Dict[str, Any],
+                          top_k: int = 10,
+                          output_fields: Optional[List[str]] = None) -> Dict[str, Any]:
+        """
+        4. 范围搜索 (Range Search)
+        基于标量字段的范围条件搜索
+        """
+        collection_type = self.get_collection_type_by_name(collection_name)
+        async with self.get_collection(collection_type) as collection:
+            if output_fields is None:
+                output_fields = ["doc_id", "stock_code", "company_name", "text_content", "publish_date", "importance_score"]
+
+            try:
+                # 构建范围查询表达式
+                conditions = []
+
+                for field, condition in field_conditions.items():
+                    if isinstance(condition, dict):
+                        if "min" in condition and "max" in condition:
+                            conditions.append(f"{field} >= {condition['min']} and {field} <= {condition['max']}")
+                        elif "min" in condition:
+                            conditions.append(f"{field} >= {condition['min']}")
+                        elif "max" in condition:
+                            conditions.append(f"{field} <= {condition['max']}")
+                        elif "eq" in condition:
+                            if isinstance(condition["eq"], str):
+                                conditions.append(f'{field} == "{condition["eq"]}"')
+                            else:
+                                conditions.append(f"{field} == {condition['eq']}")
+                        elif "in" in condition:
+                            values = condition["in"]
+                            if isinstance(values[0], str):
+                                in_clause = ", ".join([f'"{v}"' for v in values])
+                            else:
+                                in_clause = ", ".join([str(v) for v in values])
+                            conditions.append(f"{field} in [{in_clause}]")
+                    else:
+                        # 直接值比较
+                        if isinstance(condition, str):
+                            conditions.append(f'{field} == "{condition}"')
+                        else:
+                            conditions.append(f"{field} == {condition}")
+
+                expr = " and ".join(conditions)
+
+                results = collection.query(
+                    expr=expr,
+                    output_fields=output_fields,
+                    limit=top_k,
+                    consistency_level="Session"
+                )
+
+                return {
+                    "search_type": "range",
+                    "field_conditions": field_conditions,
+                    "expr": expr,
+                    "total_results": len(results),
+                    "results": results
+                }
+
+            except Exception as e:
+                logger.error(f"范围搜索失败: {e}")
+                return {"search_type": "range", "error": str(e), "results": []}
+
+    async def multi_vector_search(self,
+                                 collection_name: str,
+                                 vector_queries: Dict[str, List[float]],
+                                 top_k: int = 10,
+                                 combine_method: str = "weighted_sum",
+                                 output_fields: Optional[List[str]] = None) -> Dict[str, Any]:
+        """
+        5. 多向量搜索 (Multi-Vector Search)
+        支持多个向量字段的联合搜索
+        注意：当前schema只有一个向量字段，此方法为未来多向量字段预留
+        """
+        try:
+            if len(vector_queries) == 1:
+                # 单向量情况，直接调用向量搜索
+                vector_field, query_vector = next(iter(vector_queries.items()))
+                return await self.vector_search(
+                    collection_name=collection_name,
+                    query_vectors=[query_vector],
+                    top_k=top_k,
+                    output_fields=output_fields
+                )
+
+            # 多向量搜索逻辑（当前schema不支持，为未来扩展预留）
+            all_results = {}
+
+            for field_name, query_vector in vector_queries.items():
+                if field_name == "embedding":  # 当前唯一的向量字段
+                    results = await self.vector_search(
+                        collection_name=collection_name,
+                        query_vectors=[query_vector],
+                        top_k=top_k * 2,
+                        output_fields=output_fields
+                    )
+                    all_results[field_name] = results
+
+            # 结果合并逻辑
+            if combine_method == "weighted_sum":
+                # 加权求和合并
+                combined_scores = {}
+                weight = 1.0 / len(vector_queries)  # 平均权重
+
+                for field_name, results in all_results.items():
+                    for result in results.get("results", []):
+                        doc_id = result["entity"]["doc_id"]
+                        score = 1.0 - result["distance"]
+
+                        if doc_id in combined_scores:
+                            combined_scores[doc_id]["score"] += score * weight
+                        else:
+                            combined_scores[doc_id] = {
+                                "score": score * weight,
+                                "data": result
+                            }
+
+                # 排序并返回结果
+                final_results = sorted(
+                    combined_scores.values(),
+                    key=lambda x: x["score"],
+                    reverse=True
+                )[:top_k]
+
+                return {
+                    "search_type": "multi_vector",
+                    "vector_fields": list(vector_queries.keys()),
+                    "combine_method": combine_method,
+                    "total_results": len(final_results),
+                    "results": [r["data"] for r in final_results]
+                }
+
+        except Exception as e:
+            logger.error(f"多向量搜索失败: {e}")
+            return {"search_type": "multi_vector", "error": str(e), "results": []}
+
+    async def aggregation_search(self,
+                                collection_name: str,
+                                group_by_field: str,
+                                aggregate_field: Optional[str] = None,
+                                aggregate_func: str = "count",
+                                query_vector: Optional[List[float]] = None,
+                                top_k: int = 10,
+                                expr: Optional[str] = None) -> Dict[str, Any]:
+        """
+        6. 聚合搜索 (Aggregation Search)
+        支持分组统计和聚合计算的搜索
+        """
+        try:
+            collection_type = self.get_collection_type_by_name(collection_name)
+            async with self.get_collection(collection_type) as collection:
+                # 首先获取原始数据
+                output_fields = [group_by_field]
+                if aggregate_field:
+                    output_fields.append(aggregate_field)
+
+                # 添加其他有用字段
+                additional_fields = ["doc_id", "stock_code", "company_name", "publish_date"]
+                for field in additional_fields:
+                    if field not in output_fields:
+                        output_fields.append(field)
+
+                if query_vector:
+                    # 基于向量相似度的聚合搜索
+                    search_results = await self.vector_search(
+                        collection_name=collection_name,
+                        query_vectors=[query_vector],
+                        top_k=top_k * 10,  # 获取更多数据用于聚合
+                        output_fields=output_fields,
+                        expr=expr
+                    )
+                    raw_data = [r["entity"] for r in search_results.get("results", [])]
+                else:
+                    # 基于条件的聚合查询
+                    raw_data = collection.query(
+                        expr=expr or "doc_id != ''",
+                        output_fields=output_fields,
+                        limit=top_k * 50,  # 获取足够数据用于聚合
+                        consistency_level="Session"
+                    )
+
+                # 执行聚合计算
+                groups = {}
+                for record in raw_data:
+                    group_key = record.get(group_by_field, "未知")
+
+                    if group_key not in groups:
+                        groups[group_key] = {
+                            "group_value": group_key,
+                            "count": 0,
+                            "records": []
+                        }
+
+                    groups[group_key]["count"] += 1
+                    groups[group_key]["records"].append(record)
+
+                    # 聚合字段计算
+                    if aggregate_field and aggregate_field in record:
+                        if "aggregate_values" not in groups[group_key]:
+                            groups[group_key]["aggregate_values"] = []
+                        groups[group_key]["aggregate_values"].append(record[aggregate_field])
+
+                # 计算聚合函数结果
+                for group_key, group_data in groups.items():
+                    if aggregate_field and "aggregate_values" in group_data:
+                        values = group_data["aggregate_values"]
+                        if aggregate_func == "sum":
+                            group_data["aggregate_result"] = sum(values)
+                        elif aggregate_func == "avg":
+                            group_data["aggregate_result"] = sum(values) / len(values) if values else 0
+                        elif aggregate_func == "min":
+                            group_data["aggregate_result"] = min(values) if values else None
+                        elif aggregate_func == "max":
+                            group_data["aggregate_result"] = max(values) if values else None
+                        else:  # count
+                            group_data["aggregate_result"] = len(values)
+
+                # 排序并限制结果
+                sorted_groups = sorted(
+                    groups.values(),
+                    key=lambda x: x.get("aggregate_result", x["count"]),
+                    reverse=True
+                )[:top_k]
+
+                return {
+                    "search_type": "aggregation",
+                    "group_by_field": group_by_field,
+                    "aggregate_field": aggregate_field,
+                    "aggregate_func": aggregate_func,
+                    "total_groups": len(sorted_groups),
+                    "results": sorted_groups
+                }
+
+        except Exception as e:
+            logger.error(f"聚合搜索失败: {e}")
+            return {"search_type": "aggregation", "error": str(e), "results": []}
+
     async def cleanup_all_connections(self):
         """清理所有连接"""
         logger.info("🧹 开始清理Milvus连接...")
-        
+
         # 停止健康检查
         await self.stop_health_monitoring()
-        
+
         # 清理活跃集合
         self.active_collections.clear()
-        
+
         # 关闭所有连接
         for connection_name in list(self.connections.keys()):
             await self.close_connection(connection_name)
-        
+
         self.connections.clear()
-        
+
         logger.info("✅ Milvus连接清理完成")
 
 
@@ -878,17 +1375,429 @@ if __name__ == "__main__":
         print(f"  活跃连接: {status['connections']['active']}/{status['connections']['total']}")
         print(f"  注册集合: {status['collections']['total']}")
         print(f"  健康集合: {status['collections']['healthy']}")
-        
+
         if status['recent_operations']:
             print(f"  最近操作:")
             for op in status['recent_operations'][-3:]:
                 print(f"    - {op['operation']}: {op.get('collection_name', 'N/A')} "
                      f"({'✅' if op['success'] else '❌'})")
-        
+
         # 清理
         await manager.cleanup_all_connections()
-        
+
         print("\n" + "="*70)
-    
+
+    # ========================================
+    # 6种搜索功能实现
+    # ========================================
+
+    async def vector_search(self,
+                           collection_name: str,
+                           query_vectors: List[List[float]],
+                           top_k: int = 10,
+                           output_fields: Optional[List[str]] = None,
+                           expr: Optional[str] = None,
+                           search_params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """
+        1. 向量搜索 (Vector Search)
+        基于向量相似度的搜索，适用于语义搜索场景
+        """
+        collection_type = self.get_collection_type_by_name(collection_name)
+        async with self.get_collection(collection_type) as collection:
+            if output_fields is None:
+                output_fields = ["doc_id", "stock_code", "company_name", "text_content", "publish_date", "importance_score"]
+
+            if search_params is None:
+                search_params = {
+                    "metric_type": "COSINE",
+                    "params": {"ef": 128}
+                }
+
+            try:
+                results = collection.search(
+                    data=query_vectors,
+                    anns_field="embedding",
+                    param=search_params,
+                    limit=top_k,
+                    expr=expr,
+                    output_fields=output_fields,
+                    consistency_level="Session"
+                )
+
+                return {
+                    "search_type": "vector",
+                    "total_results": len(results),
+                    "results": [
+                        {
+                            "id": hit.id,
+                            "distance": hit.distance,
+                            "entity": hit.entity.to_dict() if hasattr(hit.entity, 'to_dict') else dict(hit.entity)
+                        } for result in results for hit in result
+                    ],
+                    "search_params": search_params
+                }
+            except Exception as e:
+                logger.error(f"向量搜索失败: {e}")
+                return {"search_type": "vector", "error": str(e), "results": []}
+
+    async def text_search(self,
+                         collection_name: str,
+                         query_text: str,
+                         top_k: int = 10,
+                         output_fields: Optional[List[str]] = None) -> Dict[str, Any]:
+        """
+        2. 文本搜索 (Text Search)
+        基于文本内容的全文搜索
+        """
+        collection_type = self.get_collection_type_by_name(collection_name)
+        async with self.get_collection(collection_type) as collection:
+            if output_fields is None:
+                output_fields = ["doc_id", "stock_code", "company_name", "text_content", "publish_date", "importance_score"]
+
+            try:
+                # 构建文本匹配表达式
+                text_expr = f'text_content like "%{query_text}%"'
+
+                results = collection.query(
+                    expr=text_expr,
+                    output_fields=output_fields,
+                    limit=top_k,
+                    consistency_level="Session"
+                )
+
+                return {
+                    "search_type": "text",
+                    "query_text": query_text,
+                    "total_results": len(results),
+                    "results": results,
+                    "text_expr": text_expr
+                }
+            except Exception as e:
+                logger.error(f"文本搜索失败: {e}")
+                return {"search_type": "text", "error": str(e), "results": []}
+
+    async def hybrid_search(self,
+                           collection_name: str,
+                           query_vector: List[float],
+                           query_text: str,
+                           top_k: int = 10,
+                           vector_weight: float = 0.7,
+                           text_weight: float = 0.3,
+                           output_fields: Optional[List[str]] = None) -> Dict[str, Any]:
+        """
+        3. 混合搜索 (Hybrid Search)
+        结合向量相似度和文本匹配的混合搜索
+        """
+        try:
+            # 执行向量搜索
+            vector_results = await self.vector_search(
+                collection_name=collection_name,
+                query_vectors=[query_vector],
+                top_k=top_k * 2,  # 获取更多结果用于混合排序
+                output_fields=output_fields
+            )
+
+            # 执行文本搜索
+            text_results = await self.text_search(
+                collection_name=collection_name,
+                query_text=query_text,
+                top_k=top_k * 2,
+                output_fields=output_fields
+            )
+
+            # 混合评分
+            hybrid_scores = {}
+
+            # 向量搜索结果评分
+            for result in vector_results.get("results", []):
+                doc_id = result["entity"]["doc_id"]
+                vector_score = 1.0 - result["distance"]  # 距离越小，相似度越高
+                hybrid_scores[doc_id] = {"vector_score": vector_score, "text_score": 0.0, "data": result}
+
+            # 文本搜索结果评分
+            max_text_score = len(text_results.get("results", []))
+            for i, result in enumerate(text_results.get("results", [])):
+                doc_id = result["doc_id"]
+                text_score = (max_text_score - i) / max_text_score  # 排名越前，得分越高
+
+                if doc_id in hybrid_scores:
+                    hybrid_scores[doc_id]["text_score"] = text_score
+                else:
+                    hybrid_scores[doc_id] = {
+                        "vector_score": 0.0,
+                        "text_score": text_score,
+                        "data": {"entity": result}
+                    }
+
+            # 计算混合得分并排序
+            final_results = []
+            for doc_id, scores in hybrid_scores.items():
+                final_score = (scores["vector_score"] * vector_weight +
+                             scores["text_score"] * text_weight)
+
+                result_data = scores["data"]
+                result_data["hybrid_score"] = final_score
+                result_data["vector_score"] = scores["vector_score"]
+                result_data["text_score"] = scores["text_score"]
+
+                final_results.append(result_data)
+
+            # 按混合得分排序并截取前top_k
+            final_results.sort(key=lambda x: x["hybrid_score"], reverse=True)
+            final_results = final_results[:top_k]
+
+            return {
+                "search_type": "hybrid",
+                "query_text": query_text,
+                "vector_weight": vector_weight,
+                "text_weight": text_weight,
+                "total_results": len(final_results),
+                "results": final_results
+            }
+
+        except Exception as e:
+            logger.error(f"混合搜索失败: {e}")
+            return {"search_type": "hybrid", "error": str(e), "results": []}
+
+    async def range_search(self,
+                          collection_name: str,
+                          field_conditions: Dict[str, Any],
+                          top_k: int = 10,
+                          output_fields: Optional[List[str]] = None) -> Dict[str, Any]:
+        """
+        4. 范围搜索 (Range Search)
+        基于标量字段的范围条件搜索
+        """
+        collection_type = self.get_collection_type_by_name(collection_name)
+        async with self.get_collection(collection_type) as collection:
+            if output_fields is None:
+                output_fields = ["doc_id", "stock_code", "company_name", "text_content", "publish_date", "importance_score"]
+
+            try:
+                # 构建范围查询表达式
+                conditions = []
+
+                for field, condition in field_conditions.items():
+                    if isinstance(condition, dict):
+                        if "min" in condition and "max" in condition:
+                            conditions.append(f"{field} >= {condition['min']} and {field} <= {condition['max']}")
+                        elif "min" in condition:
+                            conditions.append(f"{field} >= {condition['min']}")
+                        elif "max" in condition:
+                            conditions.append(f"{field} <= {condition['max']}")
+                        elif "eq" in condition:
+                            if isinstance(condition["eq"], str):
+                                conditions.append(f'{field} == "{condition["eq"]}"')
+                            else:
+                                conditions.append(f"{field} == {condition['eq']}")
+                        elif "in" in condition:
+                            values = condition["in"]
+                            if isinstance(values[0], str):
+                                in_clause = ", ".join([f'"{v}"' for v in values])
+                            else:
+                                in_clause = ", ".join([str(v) for v in values])
+                            conditions.append(f"{field} in [{in_clause}]")
+                    else:
+                        # 直接值比较
+                        if isinstance(condition, str):
+                            conditions.append(f'{field} == "{condition}"')
+                        else:
+                            conditions.append(f"{field} == {condition}")
+
+                expr = " and ".join(conditions)
+
+                results = collection.query(
+                    expr=expr,
+                    output_fields=output_fields,
+                    limit=top_k,
+                    consistency_level="Session"
+                )
+
+                return {
+                    "search_type": "range",
+                    "field_conditions": field_conditions,
+                    "expr": expr,
+                    "total_results": len(results),
+                    "results": results
+                }
+
+            except Exception as e:
+                logger.error(f"范围搜索失败: {e}")
+                return {"search_type": "range", "error": str(e), "results": []}
+
+    async def multi_vector_search(self,
+                                 collection_name: str,
+                                 vector_queries: Dict[str, List[float]],
+                                 top_k: int = 10,
+                                 combine_method: str = "weighted_sum",
+                                 output_fields: Optional[List[str]] = None) -> Dict[str, Any]:
+        """
+        5. 多向量搜索 (Multi-Vector Search)
+        支持多个向量字段的联合搜索
+        注意：当前schema只有一个向量字段，此方法为未来多向量字段预留
+        """
+        try:
+            if len(vector_queries) == 1:
+                # 单向量情况，直接调用向量搜索
+                vector_field, query_vector = next(iter(vector_queries.items()))
+                return await self.vector_search(
+                    collection_name=collection_name,
+                    query_vectors=[query_vector],
+                    top_k=top_k,
+                    output_fields=output_fields
+                )
+
+            # 多向量搜索逻辑（当前schema不支持，为未来扩展预留）
+            all_results = {}
+
+            for field_name, query_vector in vector_queries.items():
+                if field_name == "embedding":  # 当前唯一的向量字段
+                    results = await self.vector_search(
+                        collection_name=collection_name,
+                        query_vectors=[query_vector],
+                        top_k=top_k * 2,
+                        output_fields=output_fields
+                    )
+                    all_results[field_name] = results
+
+            # 结果合并逻辑
+            if combine_method == "weighted_sum":
+                # 加权求和合并
+                combined_scores = {}
+                weight = 1.0 / len(vector_queries)  # 平均权重
+
+                for field_name, results in all_results.items():
+                    for result in results.get("results", []):
+                        doc_id = result["entity"]["doc_id"]
+                        score = 1.0 - result["distance"]
+
+                        if doc_id in combined_scores:
+                            combined_scores[doc_id]["score"] += score * weight
+                        else:
+                            combined_scores[doc_id] = {
+                                "score": score * weight,
+                                "data": result
+                            }
+
+                # 排序并返回结果
+                final_results = sorted(
+                    combined_scores.values(),
+                    key=lambda x: x["score"],
+                    reverse=True
+                )[:top_k]
+
+                return {
+                    "search_type": "multi_vector",
+                    "vector_fields": list(vector_queries.keys()),
+                    "combine_method": combine_method,
+                    "total_results": len(final_results),
+                    "results": [r["data"] for r in final_results]
+                }
+
+        except Exception as e:
+            logger.error(f"多向量搜索失败: {e}")
+            return {"search_type": "multi_vector", "error": str(e), "results": []}
+
+    async def aggregation_search(self,
+                                collection_name: str,
+                                group_by_field: str,
+                                aggregate_field: Optional[str] = None,
+                                aggregate_func: str = "count",
+                                query_vector: Optional[List[float]] = None,
+                                top_k: int = 10,
+                                expr: Optional[str] = None) -> Dict[str, Any]:
+        """
+        6. 聚合搜索 (Aggregation Search)
+        支持分组统计和聚合计算的搜索
+        """
+        try:
+            collection_type = self.get_collection_type_by_name(collection_name)
+            async with self.get_collection(collection_type) as collection:
+                # 首先获取原始数据
+                output_fields = [group_by_field]
+                if aggregate_field:
+                    output_fields.append(aggregate_field)
+
+                # 添加其他有用字段
+                additional_fields = ["doc_id", "stock_code", "company_name", "publish_date"]
+                for field in additional_fields:
+                    if field not in output_fields:
+                        output_fields.append(field)
+
+                if query_vector:
+                    # 基于向量相似度的聚合搜索
+                    search_results = await self.vector_search(
+                        collection_name=collection_name,
+                        query_vectors=[query_vector],
+                        top_k=top_k * 10,  # 获取更多数据用于聚合
+                        output_fields=output_fields,
+                        expr=expr
+                    )
+                    raw_data = [r["entity"] for r in search_results.get("results", [])]
+                else:
+                    # 基于条件的聚合查询
+                    raw_data = collection.query(
+                        expr=expr or "doc_id != ''",
+                        output_fields=output_fields,
+                        limit=top_k * 50,  # 获取足够数据用于聚合
+                        consistency_level="Session"
+                    )
+
+                # 执行聚合计算
+                groups = {}
+                for record in raw_data:
+                    group_key = record.get(group_by_field, "未知")
+
+                    if group_key not in groups:
+                        groups[group_key] = {
+                            "group_value": group_key,
+                            "count": 0,
+                            "records": []
+                        }
+
+                    groups[group_key]["count"] += 1
+                    groups[group_key]["records"].append(record)
+
+                    # 聚合字段计算
+                    if aggregate_field and aggregate_field in record:
+                        if "aggregate_values" not in groups[group_key]:
+                            groups[group_key]["aggregate_values"] = []
+                        groups[group_key]["aggregate_values"].append(record[aggregate_field])
+
+                # 计算聚合函数结果
+                for group_key, group_data in groups.items():
+                    if aggregate_field and "aggregate_values" in group_data:
+                        values = group_data["aggregate_values"]
+                        if aggregate_func == "sum":
+                            group_data["aggregate_result"] = sum(values)
+                        elif aggregate_func == "avg":
+                            group_data["aggregate_result"] = sum(values) / len(values) if values else 0
+                        elif aggregate_func == "min":
+                            group_data["aggregate_result"] = min(values) if values else None
+                        elif aggregate_func == "max":
+                            group_data["aggregate_result"] = max(values) if values else None
+                        else:  # count
+                            group_data["aggregate_result"] = len(values)
+
+                # 排序并限制结果
+                sorted_groups = sorted(
+                    groups.values(),
+                    key=lambda x: x.get("aggregate_result", x["count"]),
+                    reverse=True
+                )[:top_k]
+
+                return {
+                    "search_type": "aggregation",
+                    "group_by_field": group_by_field,
+                    "aggregate_field": aggregate_field,
+                    "aggregate_func": aggregate_func,
+                    "total_groups": len(sorted_groups),
+                    "results": sorted_groups
+                }
+
+        except Exception as e:
+            logger.error(f"聚合搜索失败: {e}")
+            return {"search_type": "aggregation", "error": str(e), "results": []}
+
     # 运行测试
     asyncio.run(test_unified_milvus_manager())

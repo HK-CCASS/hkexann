@@ -172,12 +172,13 @@ class HKEXAPIMonitor:
     async def fetch_latest_announcements(self, stock_codes: List[str] = None) -> List[Dict[str, Any]]:
         """
         获取最新公告数据 (实时监听API) - 修复版
-        
+
         Args:
-            stock_codes: 监听的股票代码列表，用于后续过滤（监听API不需要指定股票）
-            
+            stock_codes: [已弃用] 不再在API层进行股票过滤，所有公告将传递给HKEX分类过滤器
+
         Returns:
             包含新公告的列表（带有_announcement_id和_parsed_datetime字段）
+            注意：现在返回所有时间过滤后的公告，不再进行股票代码过滤
         """
         # 🔧 修复：记录轮询尝试时间
         self.last_poll_attempt = datetime.now(self.hk_tz)
@@ -211,7 +212,11 @@ class HKEXAPIMonitor:
                             # 过滤出新公告（基于时间戳）
                             new_announcements = self.filter_new_announcements(announcements)
                             logger.info(f"发现 {len(new_announcements)} 条新公告")
-                            
+
+                            # 注释：移除股票代码过滤，让所有公告流转到HKEX官方分类过滤器
+                            # 这样可以支持基于公告类型的智能分类，而不是简单的股票代码过滤
+                            logger.debug(f"跳过API层股票过滤，将 {len(new_announcements)} 条公告传递给HKEX分类过滤器")
+
                             return new_announcements
                             
                         except json.JSONDecodeError as e:
@@ -392,7 +397,7 @@ class HKEXAPIMonitor:
         
         if not self.last_successful_check:
             # 🔧 修复：首次运行获取最近3小时的公告（与注释一致）
-            cutoff_time = now_hk - timedelta(hours=24)
+            cutoff_time = now_hk - timedelta(hours=36)
             logger.info("首次运行，获取最近3小时的公告")
         else:
             # 🔧 修复：使用上次成功处理的时间作为基准

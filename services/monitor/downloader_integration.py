@@ -169,7 +169,7 @@ class RealtimeDownloaderWrapper:
             if self.enable_smart_classification and self.classifier:
                 try:
                     # 使用智能分类器生成分类路径
-                    category_path, keyword_category, priority, confidence = self.classifier.classify_announcement(announcement)
+                    category_path, keyword_category, priority, confidence, hkex_classification = self.classifier.classify_announcement(announcement)
                     
                     if category_path:
                         # 创建分类子目录
@@ -368,6 +368,29 @@ class RealtimeDownloaderWrapper:
         # 生成文件名
         filename = self._generate_filename(announcement)
 
+        # 获取HKEX分类名称（如果没有则尝试解析）
+        hkex_category_name = announcement.get('hkex_category_name', '')
+
+        # 如果没有分类名称，尝试从T2_CODE或T1_CODE解析
+        if not hkex_category_name:
+            try:
+                from .classification_parser import get_classification_parser
+                parser = get_classification_parser()
+                if parser.load_classifications():
+                    t2_code = announcement.get('T2_CODE', '').strip()
+                    if t2_code:
+                        hierarchy = parser.get_category_hierarchy(t2_code)
+                        if hierarchy:
+                            hkex_category_name = hierarchy.get('level3_name', '')
+                    else:
+                        t1_code = announcement.get('T1_CODE', '').strip()
+                        if t1_code:
+                            # 对于T1_CODE，我们可能需要查找对应的分类名称
+                            # 这里简化处理，使用T1_CODE本身作为名称
+                            hkex_category_name = f"T1_{t1_code}"
+            except Exception as e:
+                logger.debug(f"解析HKEX分类名称失败: {e}")
+
         # 包含HKEX分类信息
         metadata = {
             'stock_code': announcement.get('STOCK_CODE', 'Unknown'),
@@ -378,7 +401,7 @@ class RealtimeDownloaderWrapper:
             # HKEX分类信息
             't1_code': announcement.get('T1_CODE', ''),
             't2_code': announcement.get('T2_CODE', ''),
-            'hkex_category_name': announcement.get('hkex_category_name', '')  # 如果已解析
+            'hkex_category_name': hkex_category_name
         }
 
         return {'url': pdf_url, 'filename': filename, 'metadata': metadata}

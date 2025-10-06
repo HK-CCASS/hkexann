@@ -15,17 +15,16 @@ aiofiles>=0.8.0          # 异步文件操作
 tenacity>=8.0.0          # 重试机制（支持异步）
 tqdm>=4.62.0             # 进度条显示
 
-# 守护进程依赖（定时任务功能）
-schedule>=1.2.0          # 任务调度器
-psutil>=5.8.0            # 系统和进程监控
+# 系统监控依赖
+psutil>=5.8.0            # 系统和进程监控（用于性能监控和资源管理）
 
 # 文本处理依赖（繁简转换功能）
 opencc-python-reimplemented>=1.1.6  # 繁简体转换，用于关键字匹配
 
 # 安装说明：
 # 基础功能：pip install requests PyYAML beautifulsoup4
-# 异步下载：pip install aiohttp aiofiles tenacity tqdm  
+# 异步下载：pip install aiohttp aiofiles tenacity tqdm
 # 数据库功能：pip install pymysql
-# 守护进程：pip install schedule psutil
+# 系统监控：pip install psutil
 # 繁简转换：pip install opencc-python-reimplemented
 # 全部安装：pip install -r requirements.txt

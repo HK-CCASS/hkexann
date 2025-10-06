@@ -138,10 +138,16 @@ class DocumentMetadata:
     publish_date: Optional[datetime]
     page_count: int
 
-    # HKEX分类信息
-    hkex_t1_code: str = ""
-    hkex_t2_code: str = ""
-    hkex_category_name: str = ""
+    # HKEX官方3级分类字段 - 与ClickHouse和Milvus schema保持一致
+    hkex_level1_code: str = ""
+    hkex_level1_name: str = ""
+    hkex_level2_code: str = ""
+    hkex_level2_name: str = ""
+    hkex_level3_code: str = ""
+    hkex_level3_name: str = ""
+    hkex_classification_confidence: float = 0.0
+    hkex_full_path: str = ""
+    hkex_classification_method: str = "hkex_official"
 
 
 class HKEXPDFParser:
@@ -367,15 +373,41 @@ class HKEXPDFParser:
                 # 构建最终的字段值
                 document_type = official_main_category or "公告及通告"  # 默认为公告及通告
                 
-                # 构建document_category
-                if keyword_category and official_sub_category:
-                    document_category = f"{keyword_category}/{official_sub_category}"
-                elif keyword_category:
-                    document_category = keyword_category
-                elif official_sub_category:
-                    document_category = official_sub_category
+                # 构建document_category - 优先使用HKEX分类信息
+                hkex_category = ""
+                if metadata:
+                    # 优先使用hkex_category_name
+                    hkex_category = metadata.get('hkex_category_name', '').strip()
+                    if not hkex_category:
+                        # 备选使用t2_code对应的分类名称
+                        t2_code = metadata.get('t2_code', '').strip()
+                        if t2_code:
+                            try:
+                                from services.monitor.classification_parser import get_classification_parser
+                                parser = get_classification_parser()
+                                if parser.load_classifications():
+                                    hierarchy = parser.get_category_hierarchy(t2_code)
+                                    if hierarchy:
+                                        hkex_category = hierarchy.get('level3_name', '')
+                            except Exception as e:
+                                logger.debug(f"解析HKEX分类失败: {e}")
+
+                # 如果有HKEX分类信息，使用它
+                if hkex_category:
+                    if keyword_category:
+                        document_category = f"{keyword_category}/{hkex_category}"
+                    else:
+                        document_category = hkex_category
                 else:
-                    document_category = "其他"
+                    # 回退到原来的路径分析逻辑
+                    if keyword_category and official_sub_category:
+                        document_category = f"{keyword_category}/{official_sub_category}"
+                    elif keyword_category:
+                        document_category = keyword_category
+                    elif official_sub_category:
+                        document_category = official_sub_category
+                    else:
+                        document_category = "其他"
 
             # 智能分类路径识别：如果没有通过HKEX标准路径找到分类，尝试识别智能分类路径
             elif hkex_root_index == -1:
@@ -949,22 +981,39 @@ class HKEXPDFParser:
             # 4. 创建文档元数据
             doc_id = f"doc_{file_hash[:16]}"
 
-            # 提取HKEX分类信息
-            hkex_t1_code = ""
-            hkex_t2_code = ""
-            hkex_category_name = ""
+            # 提取HKEX官方3级分类信息 - 使用新的字段名
+            hkex_level1_code = ""
+            hkex_level1_name = ""
+            hkex_level2_code = ""
+            hkex_level2_name = ""
+            hkex_level3_code = ""
+            hkex_level3_name = ""
+            hkex_classification_confidence = 0.0
+            hkex_full_path = ""
+            hkex_classification_method = "hkex_official"
 
             if metadata:
-                hkex_t1_code = metadata.get('t1_code', '')
-                hkex_t2_code = metadata.get('t2_code', '')
-                hkex_category_name = metadata.get('hkex_category_name', '')
+                # 支持旧字段名的向后兼容
+                hkex_level1_code = metadata.get('hkex_level1_code', metadata.get('t1_code', ''))
+                hkex_level1_name = metadata.get('hkex_level1_name', '')
+                hkex_level2_code = metadata.get('hkex_level2_code', metadata.get('t2_code', ''))
+                hkex_level2_name = metadata.get('hkex_level2_name', '')
+                hkex_level3_code = metadata.get('hkex_level3_code', '')
+                hkex_level3_name = metadata.get('hkex_level3_name', metadata.get('hkex_category_name', ''))
+                hkex_classification_confidence = metadata.get('hkex_classification_confidence', 0.0)
+                hkex_full_path = metadata.get('hkex_full_path', '')
+                hkex_classification_method = metadata.get('hkex_classification_method', 'hkex_official')
 
             doc_metadata = DocumentMetadata(doc_id=doc_id, file_path=str(pdf_path), file_name=pdf_path.name,
                 file_size=file_size, file_hash=file_hash, stock_code=path_metadata['stock_code'],
                 company_name=path_metadata['company_name'], document_type=path_metadata['document_type'],
                 document_category=path_metadata['document_category'], document_title=path_metadata['document_title'],
                 publish_date=path_metadata['publish_date'], page_count=page_count,
-                hkex_t1_code=hkex_t1_code, hkex_t2_code=hkex_t2_code, hkex_category_name=hkex_category_name)
+                hkex_level1_code=hkex_level1_code, hkex_level1_name=hkex_level1_name,
+                hkex_level2_code=hkex_level2_code, hkex_level2_name=hkex_level2_name,
+                hkex_level3_code=hkex_level3_code, hkex_level3_name=hkex_level3_name,
+                hkex_classification_confidence=hkex_classification_confidence,
+                hkex_full_path=hkex_full_path, hkex_classification_method=hkex_classification_method)
 
             # 5. 提取文本块
             text_blocks = self.extract_text_blocks(pdf_path)
