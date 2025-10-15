@@ -66,7 +66,8 @@ class ClickHousePDFStorage:
                 ttl_dns_cache=300,   # DNS缓存5分钟
                 use_dns_cache=True,  # 启用DNS缓存
                 enable_cleanup_closed=True,  # 启用已关闭连接清理
-                keepalive_timeout=60  # 连接保活60秒
+                keepalive_timeout=300,  # 🔧 修复：连接保活延长到5分钟（原60秒太短）
+                force_close=False   # 🔧 修复：不强制关闭连接，允许复用
             )
             
             self.session = aiohttp.ClientSession(
@@ -93,9 +94,9 @@ class ClickHousePDFStorage:
     
     async def _execute_query(self, query: str, params: Optional[Dict] = None, max_retries: int = 3) -> List[List[str]]:
         """执行ClickHouse查询，带重试机制"""
-        # 如果会话未初始化，先尝试初始化
-        if not self.session:
-            logger.info("ClickHouse会话未初始化，正在初始化...")
+        # 🔧 修复：主动检查并重建连接
+        if not self.session or self.session.closed:
+            logger.info("ClickHouse会话未初始化或已关闭，正在重新初始化...")
             await self.initialize()
         
         # 构建URL参数
@@ -136,7 +137,11 @@ class ClickHousePDFStorage:
                     
             except (aiohttp.ClientError, aiohttp.ServerDisconnectedError, OSError) as e:
                 last_exception = e
-                logger.warning(f"ClickHouse查询连接异常 (尝试 {attempt + 1}/{max_retries}): {e}")
+                # 🔧 修复：首次重试使用DEBUG级别（连接超时是正常的），只有多次失败才WARNING
+                if attempt == 0:
+                    logger.debug(f"ClickHouse连接已超时，正在重连 (尝试 {attempt + 1}/{max_retries}): {e}")
+                else:
+                    logger.warning(f"ClickHouse查询连接异常 (尝试 {attempt + 1}/{max_retries}): {e}")
                 
                 # 连接异常时重新初始化会话
                 if attempt < max_retries - 1:

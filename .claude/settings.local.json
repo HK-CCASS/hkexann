@@ -19,7 +19,15 @@
       "Bash(pip install:*)",
       "Bash(grep:*)",
       "Bash(rm:*)",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "mcp__hkex-rag__milvus_text_search",
+      "mcp__hkex-rag__list_milvus_collections",
+      "mcp__hkex-rag__get_milvus_collection_info",
+      "mcp__hkex-rag__execute_clickhouse_query",
+      "mcp__hkex-rag__list_clickhouse_databases",
+      "mcp__hkex-rag__list_clickhouse_tables",
+      "mcp__hkex-rag__get_clickhouse_table_schema",
+      "mcp__hkex-rag__milvus_range_search"
     ],
     "deny": []
   }

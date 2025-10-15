@@ -47,27 +47,31 @@ class CorrectedHistoricalProcessor:
     3. 分批处理避免API过载和资源竞争
     """
     
-    def __init__(self, 
+    def __init__(self,
                  hkex_downloader,  # 使用原项目的HKEXDownloader
-                 dual_filter, 
+                 dual_filter,
                  vectorizer,
                  monitored_stocks: Set[str],
-                 config: Dict[str, Any]):
+                 config: Dict[str, Any],
+                 progress_callback=None):
         """
         初始化修复后的历史批量处理器
-        
+
         Args:
             hkex_downloader: 原项目的HKEXDownloader实例 (使用titleSearchServlet.do)
             dual_filter: 双重过滤器
             vectorizer: 向量化器
             monitored_stocks: 监控股票集合
             config: 配置信息
+            progress_callback: 进度回调函数，用于断点续传
         """
         self.hkex_downloader = hkex_downloader
         self.dual_filter = dual_filter
         self.vectorizer = vectorizer
-        self.monitored_stocks = monitored_stocks
+        # 确保monitored_stocks不为None
+        self.monitored_stocks = monitored_stocks if monitored_stocks is not None else set()
         self.config = config
+        self.progress_callback = progress_callback
         
         # 历史处理配置
         self.historical_days = config.get('historical_days', 365)  # 默认一年
@@ -189,37 +193,26 @@ class CorrectedHistoricalProcessor:
             
             logger.info(f"📦 股票分批: {len(stock_batches)} 批，每批最多 {self.stock_batch_size} 只")
             
-            all_announcements = []
-            
-            # 处理每个股票批次
+            # 已处理的股票列表，用于断点续传
+            processed_stocks = []
+
+            # 处理每个股票批次，每批完成后立即过滤和下载
             for batch_idx, stock_batch in enumerate(stock_batches, 1):
                 logger.info(f"📦 处理第 {batch_idx}/{len(stock_batches)} 批股票: {stock_batch}")
-                
-                batch_announcements = await self._process_stock_batch(
-                    stock_batch, start_date, end_date
+
+                batch_stats = await self._process_stock_batch_and_download(
+                    stock_batch, start_date, end_date, processed_stocks
                 )
-                
-                all_announcements.extend(batch_announcements)
-                self.processing_stats['total_stocks_processed'] += len(stock_batch)
-                
+
+                # 🔧 修复：统计信息已在每只股票处理时实时更新，这里不再重复累加
+                # 只记录日志即可
+                logger.info(f"📊 第 {batch_idx}/{len(stock_batches)} 批处理完成 - "
+                           f"已处理 {len(processed_stocks)}/{len(stock_list)} 只股票")
+
                 # 批次间休息，避免API过载
                 if batch_idx < len(stock_batches):
                     logger.info(f"⏸️ 批次间休息 {self.api_delay} 秒...")
                     await asyncio.sleep(self.api_delay)
-            
-            logger.info(f"📊 历史公告收集完成: 总计 {len(all_announcements)} 条")
-            self.processing_stats['total_announcements_found'] = len(all_announcements)
-            
-            # 过滤相关公告
-            if all_announcements:
-                logger.info("🔍 开始过滤相关公告...")
-                relevant_announcements = await self._filter_announcements(all_announcements)
-                logger.info(f"✅ 过滤完成: {len(relevant_announcements)} 条相关公告")
-                
-                # 批量处理相关公告
-                if relevant_announcements:
-                    download_stats = await self._batch_download_and_vectorize(relevant_announcements)
-                    self.processing_stats.update(download_stats)
             
             # 保存处理状态
             await self._save_processing_status()
@@ -260,57 +253,136 @@ class CorrectedHistoricalProcessor:
                 **self.processing_stats
             }
 
-    async def _process_stock_batch(self, stock_batch: List[str], 
-                                 start_date: datetime, end_date: datetime) -> List[Dict[str, Any]]:
+    async def _process_stock_batch_and_download(self, stock_batch: List[str],
+                                               start_date: datetime, end_date: datetime,
+                                               processed_stocks: List[str]) -> Dict[str, Any]:
         """
-        处理一批股票的历史公告
-        
+        处理一批股票的历史公告，并立即进行过滤、下载和向量化
+
         Args:
             stock_batch: 股票代码列表
             start_date: 开始日期
             end_date: 结束日期
-            
+            processed_stocks: 已处理股票列表（会在每只股票完成后更新）
+
         Returns:
-            List[Dict[str, Any]]: 公告列表
+            Dict[str, Any]: 该批次的处理统计
         """
-        batch_announcements = []
-        
+        batch_stats = {
+            'announcements_found': 0,
+            'announcements_downloaded': 0,
+            'announcements_vectorized': 0,
+            'api_calls': 0,
+            'errors': []
+        }
+
         # 为每只股票查询历史公告
         for stock_code in stock_batch:
+            # 当前股票的统计（用于实时更新总体统计）
+            stock_stats = {
+                'announcements_found': 0,
+                'announcements_downloaded': 0,
+                'announcements_vectorized': 0,
+                'api_calls': 0,
+                'errors': []
+            }
+            
             try:
                 logger.info(f"📈 处理股票 {stock_code} 的历史公告...")
-                
+
                 # 分时间段查询，避免单次查询过大
                 current_start = start_date
                 stock_announcements = []
-                
+
                 while current_start < end_date:
                     chunk_end = min(current_start + timedelta(days=self.date_chunk_days), end_date)
-                    
+
                     logger.debug(f"  📅 查询 {stock_code}: {current_start.strftime('%Y-%m-%d')} - {chunk_end.strftime('%Y-%m-%d')}")
-                    
+
                     # 使用正确的下载API查询
                     chunk_announcements = await self._fetch_announcements_using_download_api(
                         stock_code, current_start, chunk_end
                     )
-                    
+
                     stock_announcements.extend(chunk_announcements)
-                    self.processing_stats['api_calls_made'] += 1
-                    
+                    stock_stats['api_calls'] += 1
+
                     current_start = chunk_end
-                    
+
                     # API调用间隔
                     await asyncio.sleep(0.5)
-                
-                batch_announcements.extend(stock_announcements)
+
+                stock_stats['announcements_found'] += len(stock_announcements)
                 logger.info(f"✅ 股票 {stock_code}: 找到 {len(stock_announcements)} 条公告")
+
+                # 立即过滤和处理这支股票的公告
+                if stock_announcements:
+                    logger.info(f"🔍 过滤股票 {stock_code} 的 {len(stock_announcements)} 条公告...")
+                    relevant_announcements = await self._filter_announcements(stock_announcements)
+
+                    if relevant_announcements:
+                        logger.info(f"📥 下载股票 {stock_code} 的 {len(relevant_announcements)} 条相关公告...")
+                        download_stats = await self._batch_download_and_vectorize(relevant_announcements)
+
+                        stock_stats['announcements_downloaded'] += download_stats.get('total_announcements_downloaded', 0)
+                        stock_stats['announcements_vectorized'] += download_stats.get('total_announcements_vectorized', 0)
+                        stock_stats['errors'].extend(download_stats.get('download_errors', []))
+                        stock_stats['errors'].extend(download_stats.get('vectorization_errors', []))
+
+                        logger.info(f"✅ 股票 {stock_code} 处理完成: 找到{len(stock_announcements)}条 → 过滤{len(relevant_announcements)}条 → 下载{stock_stats['announcements_downloaded']}条 → 向量化{stock_stats['announcements_vectorized']}条")
+                    else:
+                        logger.info(f"⚠️ 股票 {stock_code}: 无相关公告需要处理")
+                else:
+                    logger.info(f"⚠️ 股票 {stock_code}: 未找到任何公告")
+
+                # 🔧 关键修复1：立即累加当前股票的统计到批次统计
+                batch_stats['announcements_found'] += stock_stats['announcements_found']
+                batch_stats['announcements_downloaded'] += stock_stats['announcements_downloaded']
+                batch_stats['announcements_vectorized'] += stock_stats['announcements_vectorized']
+                batch_stats['api_calls'] += stock_stats['api_calls']
+                batch_stats['errors'].extend(stock_stats['errors'])
                 
+                # 🔧 关键修复2：立即更新总体统计
+                self.processing_stats['total_stocks_processed'] += 1
+                self.processing_stats['total_announcements_found'] += stock_stats['announcements_found']
+                self.processing_stats['total_announcements_downloaded'] += stock_stats['announcements_downloaded']
+                self.processing_stats['total_announcements_vectorized'] += stock_stats['announcements_vectorized']
+                self.processing_stats['api_calls_made'] += stock_stats['api_calls']
+                self.processing_stats['errors'].extend(stock_stats['errors'])
+                
+                # 🔧 关键修复3：每只股票处理完成后立即更新进度并调用回调
+                processed_stocks.append(stock_code)
+                
+                # 调用进度回调函数，实时更新断点续传状态
+                if self.progress_callback:
+                    progress_data = {
+                        'processed_stocks': processed_stocks.copy(),
+                        'stats': self.processing_stats.copy()
+                    }
+                    await self.progress_callback(progress_data)
+
             except Exception as e:
                 error_msg = f"处理股票 {stock_code} 失败: {e}"
                 logger.error(f"❌ {error_msg}")
+                stock_stats['errors'].append(error_msg)
+                
+                # 累加错误信息到批次统计和总体统计
+                batch_stats['errors'].append(error_msg)
                 self.processing_stats['errors'].append(error_msg)
-        
-        return batch_announcements
+                self.processing_stats['total_stocks_processed'] += 1
+                
+                # 即使失败也标记为已处理，避免重复尝试失败的股票
+                processed_stocks.append(stock_code)
+                
+                # 调用进度回调函数
+                if self.progress_callback:
+                    progress_data = {
+                        'processed_stocks': processed_stocks.copy(),
+                        'stats': self.processing_stats.copy()
+                    }
+                    await self.progress_callback(progress_data)
+
+        return batch_stats
 
     async def _fetch_announcements_using_download_api(self, stock_code: str, 
                                                     start_date: datetime, 
