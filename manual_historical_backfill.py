@@ -16,9 +16,11 @@ import argparse
 import yaml
 import os
 import sys
+import uuid
 from datetime import datetime, timedelta
 from typing import List, Set, Dict, Any, Optional
 from pathlib import Path
+from tqdm.asyncio import tqdm
 
 # 添加项目路径
 sys.path.append(str(Path(__file__).parent))
@@ -58,7 +60,7 @@ class ManualHistoricalBackfillProcessor:
         """初始化手动历史补充处理器"""
         self.config = config
         self.start_time = datetime.now()
-        
+
         # 处理统计
         self.stats = {
             'total_stocks': 0,
@@ -70,14 +72,140 @@ class ManualHistoricalBackfillProcessor:
             'errors': [],
             'processing_time': 0.0
         }
-        
+
         # 初始化组件
         self.downloader = None
         self.vector_processor = None
         self.dual_filter = None
         self.historical_processor = None
-        
+
+        # 进度条
+        self.stock_progress_bar = None
+
+        # 断点续传相关
+        self.session_id = str(uuid.uuid4())
+        self.resume_state_file = Path("hkexann") / ".manual_backfill_resume.json"
+        self.resume_state_file.parent.mkdir(exist_ok=True)
+        self.resume_state = None
+
         logger.info("🚀 手动历史公告补充处理器初始化完成")
+
+    async def _progress_callback(self, progress_info: Dict[str, Any]):
+        """进度回调函数"""
+        if self.stock_progress_bar:
+            stage = progress_info.get('stage', '')
+            batch_idx = progress_info.get('batch_idx', 0)
+            total_batches = progress_info.get('total_batches', 1)
+            stocks_processed = progress_info.get('stocks_processed', 0)
+            total_stocks = progress_info.get('total_stocks', 0)
+            stocks_in_batch = progress_info.get('stocks_in_batch', 0)
+
+            if stage == 'batch_start':
+                self.stock_progress_bar.set_description(f"🔍 批次 {batch_idx}/{total_batches} - 搜索中")
+            elif stage == 'search_complete':
+                announcements_found = progress_info.get('announcements_found', 0)
+                self.stock_progress_bar.set_description(f"📊 批次 {batch_idx}/{total_batches} - 发现{announcements_found}条公告")
+            elif stage == 'download_complete':
+                announcements_downloaded = progress_info.get('announcements_downloaded', 0)
+                announcements_vectorized = progress_info.get('announcements_vectorized', 0)
+                self.stock_progress_bar.set_description(f"📥 批次 {batch_idx}/{total_batches} - 下载{announcements_downloaded}条，向量化{announcements_vectorized}条")
+                # 更新进度条
+                self.stock_progress_bar.update(stocks_in_batch)
+
+    async def _resume_state_callback(self, progress_data: Dict[str, Any]):
+        """续传状态回调函数"""
+        try:
+            # 如果是续传模式，直接更新状态
+            if self.resume_state:
+                self.resume_state['progress'].update(progress_data)
+                # 实时保存状态
+                await self.save_resume_state(
+                    self.resume_state['parameters'],
+                    self.resume_state['progress']
+                )
+            # 如果不是续传模式，在 process_stocks_historical 中已经保存了初始状态
+
+        except Exception as e:
+            logger.warning(f"⚠️ 续传状态回调失败: {e}")
+
+    async def check_resume_state(self) -> Optional[Dict[str, Any]]:
+        """
+        检查是否有未完成的处理任务
+
+        Returns:
+            Optional[Dict[str, Any]]: 恢复状态，如果没有则返回None
+        """
+        try:
+            if not self.resume_state_file.exists():
+                logger.info("🔍 未发现未完成的处理任务")
+                return None
+
+            import json
+            with open(self.resume_state_file, 'r', encoding='utf-8') as f:
+                state_data = json.load(f)
+
+            # 检查状态是否有效
+            if state_data.get('status') != 'in_progress':
+                logger.info("📋 发现已完成或失败的任务状态")
+                return None
+
+            # 检查是否超时（24小时）
+            start_time = datetime.fromisoformat(state_data['start_time'])
+            if datetime.now() - start_time > timedelta(hours=24):
+                logger.warning("⚠️ 发现超时的未完成任务（超过24小时），将重新开始")
+                return None
+
+            logger.info(f"🔄 发现未完成的处理任务，会话ID: {state_data['session_id']}")
+            logger.info(f"📊 进度: 已处理 {len(state_data['progress']['processed_stocks'])} 只股票")
+
+            return state_data
+
+        except Exception as e:
+            logger.warning(f"⚠️ 检查恢复状态失败: {e}")
+            return None
+
+    async def save_resume_state(self, parameters: Dict[str, Any], progress: Dict[str, Any]):
+        """
+        保存断点续传状态
+
+        Args:
+            parameters: 处理参数
+            progress: 处理进度
+        """
+        try:
+            state_data = {
+                'session_id': self.session_id,
+                'start_time': self.start_time.isoformat(),
+                'parameters': parameters,
+                'progress': progress,
+                'status': 'in_progress'
+            }
+
+            import json
+            with open(self.resume_state_file, 'w', encoding='utf-8') as f:
+                json.dump(state_data, f, ensure_ascii=False, indent=2)
+
+        except Exception as e:
+            logger.warning(f"⚠️ 保存恢复状态失败: {e}")
+
+    async def mark_resume_completed(self):
+        """标记恢复任务为完成"""
+        try:
+            if self.resume_state_file.exists():
+                import json
+                with open(self.resume_state_file, 'r', encoding='utf-8') as f:
+                    state_data = json.load(f)
+
+                state_data['status'] = 'completed'
+                state_data['end_time'] = datetime.now().isoformat()
+
+                with open(self.resume_state_file, 'w', encoding='utf-8') as f:
+                    json.dump(state_data, f, ensure_ascii=False, indent=2)
+
+                logger.info("✅ 断点续传状态已标记为完成")
+
+        except Exception as e:
+            logger.warning(f"⚠️ 标记完成状态失败: {e}")
 
     async def initialize(self) -> bool:
         """初始化所有组件"""
@@ -110,7 +238,9 @@ class ManualHistoricalBackfillProcessor:
                 simple_filter=self.hkex_filter,
                 vectorizer=self.vector_processor,
                 monitored_stocks=set(),  # 动态设置
-                config=historical_config
+                config=historical_config,
+                progress_callback=self._progress_callback,
+                resume_state_callback=self._resume_state_callback
             )
             
             logger.info("✅ 所有组件初始化完成")
@@ -120,31 +250,59 @@ class ManualHistoricalBackfillProcessor:
             logger.error(f"❌ 组件初始化失败: {e}")
             return False
 
-    async def process_stocks_historical(self, 
-                                      stock_codes: List[str], 
-                                      start_date: str, 
+    async def process_stocks_historical(self,
+                                      stock_codes: List[str],
+                                      start_date: str,
                                       end_date: str,
                                       batch_size: int = 5,
                                       enable_filtering: bool = True) -> Dict[str, Any]:
         """
         为指定股票补充历史公告
-        
+
         Args:
             stock_codes: 股票代码列表
             start_date: 开始日期 (YYYY-MM-DD)
             end_date: 结束日期 (YYYY-MM-DD)
             batch_size: 批处理大小
             enable_filtering: 是否启用过滤
-            
+
         Returns:
             处理结果统计
         """
         try:
-            logger.info(f"🎯 开始处理 {len(stock_codes)} 只股票的历史公告")
-            logger.info(f"📅 日期范围: {start_date} 至 {end_date}")
-            logger.info(f"📦 批处理大小: {batch_size}")
-            logger.info(f"🔬 启用过滤: {enable_filtering}")
-            
+            # 检查是否有未完成的处理任务
+            resume_state = await self.check_resume_state()
+            if resume_state:
+                # 检查参数是否匹配
+                params = resume_state['parameters']
+                if (params['start_date'] == start_date and
+                    params['end_date'] == end_date and
+                    params['batch_size'] == batch_size and
+                    params['enable_filtering'] == enable_filtering):
+
+                    # 参数匹配，可以续传
+                    logger.info("🔄 参数匹配，开始断点续传")
+                    processed_stocks = set(resume_state['progress']['processed_stocks'])
+                    remaining_stocks = [code for code in stock_codes if code not in processed_stocks]
+
+                    if not remaining_stocks:
+                        logger.info("✅ 所有股票已处理完成")
+                        await self.mark_resume_completed()
+                        return await self._build_resume_result(resume_state)
+
+                    logger.info(f"📋 续传模式: 已处理 {len(processed_stocks)} 只，剩余 {len(remaining_stocks)} 只")
+                    stock_codes = remaining_stocks
+                    self.resume_state = resume_state
+                else:
+                    logger.warning("⚠️ 参数不匹配，将重新开始处理")
+                    resume_state = None
+
+            if not resume_state:
+                logger.info(f"🎯 开始处理 {len(stock_codes)} 只股票的历史公告")
+                logger.info(f"📅 日期范围: {start_date} 至 {end_date}")
+                logger.info(f"📦 批处理大小: {batch_size}")
+                logger.info(f"🔬 启用过滤: {enable_filtering}")
+
             self.stats['total_stocks'] = len(stock_codes)
             stock_set = set(stock_codes)
             
@@ -177,17 +335,55 @@ class ManualHistoricalBackfillProcessor:
                 # 执行历史处理
                 logger.info("🚀 开始执行历史公告处理...")
                 processing_start = datetime.now()
-                
-                result = await self.historical_processor.process_historical_announcements()
-                
+
+                # 保存初始处理状态（如果不是续传）
+                if not self.resume_state:
+                    await self.save_resume_state({
+                        'stock_codes': stock_codes,
+                        'start_date': start_date,
+                        'end_date': end_date,
+                        'batch_size': batch_size,
+                        'enable_filtering': enable_filtering
+                    }, {
+                        'processed_stocks': [],
+                        'stats': self.stats.copy()
+                    })
+
+                # 创建股票处理进度条
+                with tqdm(total=len(stock_codes), desc="📊 处理股票", unit="只",
+                         bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]') as self.stock_progress_bar:
+
+                    # 设置初始状态
+                    if self.resume_state:
+                        self.stock_progress_bar.set_description("🔄 继续处理")
+                    else:
+                        self.stock_progress_bar.set_description("🚀 开始处理")
+
+                    result = await self.historical_processor.process_historical_announcements()
+
+                    # 确保进度条显示完成状态
+                    if self.stock_progress_bar.n < len(stock_codes):
+                        self.stock_progress_bar.update(len(stock_codes) - self.stock_progress_bar.n)
+                    self.stock_progress_bar.set_description("✅ 处理完成")
+
                 processing_time = (datetime.now() - processing_start).total_seconds()
-                
+
                 # 更新统计信息
                 self._update_stats(result, processing_time)
-                
+
+                # 合并续传状态的统计信息
+                if self.resume_state:
+                    resume_progress = self.resume_state['progress']
+                    for key in ['total_announcements', 'downloaded_announcements', 'vectorized_announcements']:
+                        if key in self.stats and key in resume_progress.get('stats', {}):
+                            self.stats[key] += resume_progress['stats'][key]
+
+                # 标记续传任务为完成
+                await self.mark_resume_completed()
+
                 logger.info(f"✅ 历史处理完成，耗时 {processing_time:.1f} 秒")
                 logger.info(f"📊 处理结果: {result}")
-                
+
                 return self._build_success_result(result)
                 
             finally:
@@ -204,8 +400,8 @@ class ManualHistoricalBackfillProcessor:
         self.stats.update({
             'processed_stocks': self.stats['total_stocks'],
             'total_announcements': result.get('total_announcements_found', 0),
-            'downloaded_announcements': result.get('successfully_downloaded', 0),
-            'vectorized_announcements': result.get('successfully_vectorized', 0),
+            'downloaded_announcements': result.get('total_announcements_downloaded', 0),
+            'vectorized_announcements': result.get('total_announcements_vectorized', 0),
             'processing_time': processing_time
         })
 
@@ -239,6 +435,43 @@ class ManualHistoricalBackfillProcessor:
                 )
             },
             'raw_result': result
+        }
+
+    async def _build_resume_result(self, resume_state: Dict[str, Any]) -> Dict[str, Any]:
+        """构建续传完成结果"""
+        progress = resume_state['progress']
+        total_time = (datetime.now() - self.start_time).total_seconds()
+
+        return {
+            'status': 'resumed_completed',
+            'summary': {
+                'total_stocks': len(resume_state['parameters']['stock_codes']),
+                'processed_stocks': len(progress['processed_stocks']),
+                'total_announcements': progress['stats'].get('total_announcements_found', 0),
+                'downloaded_announcements': progress['stats'].get('total_announcements_downloaded', 0),
+                'vectorized_announcements': progress['stats'].get('total_announcements_vectorized', 0),
+                'processing_time_seconds': progress['stats'].get('processing_time', 0.0),
+                'total_time_seconds': total_time
+            },
+            'efficiency': {
+                'download_success_rate': (
+                    progress['stats'].get('total_announcements_downloaded', 0) /
+                    max(progress['stats'].get('total_announcements_found', 1), 1) * 100
+                ),
+                'vectorization_success_rate': (
+                    progress['stats'].get('total_announcements_vectorized', 0) /
+                    max(progress['stats'].get('total_announcements_downloaded', 1), 1) * 100
+                ),
+                'avg_time_per_stock': (
+                    progress['stats'].get('processing_time', 0.0) /
+                    max(len(progress['processed_stocks']), 1)
+                )
+            },
+            'resume_info': {
+                'session_id': resume_state['session_id'],
+                'original_start_time': resume_state['start_time'],
+                'resumed_at': datetime.now().isoformat()
+            }
         }
 
     def _build_error_result(self, error_msg: str) -> Dict[str, Any]:

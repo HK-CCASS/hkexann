@@ -52,7 +52,9 @@ class CorrectedHistoricalProcessor:
                  simple_filter,
                  vectorizer,
                  monitored_stocks: Set[str],
-                 config: Dict[str, Any]):
+                 config: Dict[str, Any],
+                 progress_callback=None,
+                 resume_state_callback=None):
         """
         初始化修复后的历史批量处理器
 
@@ -62,12 +64,16 @@ class CorrectedHistoricalProcessor:
             vectorizer: 向量化器
             monitored_stocks: 监控股票集合
             config: 配置信息
+            progress_callback: 进度回调函数，可选
+            resume_state_callback: 续传状态回调函数，可选
         """
         self.hkex_downloader = hkex_downloader
         self.simple_filter = simple_filter
         self.vectorizer = vectorizer
         self.monitored_stocks = monitored_stocks
         self.config = config
+        self.progress_callback = progress_callback
+        self.resume_state_callback = resume_state_callback
         
         # 历史处理配置
         self.historical_days = config.get('historical_days', 365)  # 默认一年
@@ -188,38 +194,90 @@ class CorrectedHistoricalProcessor:
                            for i in range(0, len(stock_list), self.stock_batch_size)]
             
             logger.info(f"📦 股票分批: {len(stock_batches)} 批，每批最多 {self.stock_batch_size} 只")
-            
-            all_announcements = []
-            
-            # 处理每个股票批次
+
+            # 处理每个股票批次 - 每批处理完立即下载
             for batch_idx, stock_batch in enumerate(stock_batches, 1):
                 logger.info(f"📦 处理第 {batch_idx}/{len(stock_batches)} 批股票: {stock_batch}")
-                
+
+                # 进度回调 - 批次开始
+                if self.progress_callback:
+                    await self.progress_callback({
+                        'stage': 'batch_start',
+                        'batch_idx': batch_idx,
+                        'total_batches': len(stock_batches),
+                        'stocks_in_batch': len(stock_batch),
+                        'stocks_processed': self.processing_stats['total_stocks_processed'],
+                        'total_stocks': len(self.monitored_stocks)
+                    })
+
+                # 1. 搜索该批次的公告
                 batch_announcements = await self._process_stock_batch(
                     stock_batch, start_date, end_date
                 )
-                
-                all_announcements.extend(batch_announcements)
+
                 self.processing_stats['total_stocks_processed'] += len(stock_batch)
-                
+                self.processing_stats['total_announcements_found'] += len(batch_announcements)
+
+                logger.info(f"📊 批次 {batch_idx} 搜索完成: 发现 {len(batch_announcements)} 条公告")
+
+                # 进度回调 - 搜索完成
+                if self.progress_callback:
+                    await self.progress_callback({
+                        'stage': 'search_complete',
+                        'batch_idx': batch_idx,
+                        'total_batches': len(stock_batches),
+                        'stocks_in_batch': len(stock_batch),
+                        'stocks_processed': self.processing_stats['total_stocks_processed'],
+                        'total_stocks': len(self.monitored_stocks),
+                        'announcements_found': len(batch_announcements)
+                    })
+
+                # 2. 立即过滤该批次的公告
+                if batch_announcements:
+                    logger.info(f"🔍 过滤批次 {batch_idx} 的公告...")
+                    relevant_batch_announcements = await self._filter_announcements(batch_announcements)
+                    logger.info(f"✅ 批次 {batch_idx} 过滤完成: {len(relevant_batch_announcements)} 条相关公告")
+
+                    # 3. 立即下载和向量化该批次的相关公告
+                    if relevant_batch_announcements:
+                        logger.info(f"📥 下载批次 {batch_idx} 的相关公告...")
+                        batch_download_stats = await self._batch_download_and_vectorize(relevant_batch_announcements)
+
+                        # 累加批次的统计信息
+                        for key, value in batch_download_stats.items():
+                            if key in self.processing_stats:
+                                self.processing_stats[key] += value
+                            else:
+                                self.processing_stats[key] = value
+
+                        logger.info(f"✅ 批次 {batch_idx} 处理完成: 下载 {batch_download_stats.get('total_announcements_downloaded', 0)} 条, 向量化 {batch_download_stats.get('total_announcements_vectorized', 0)} 条")
+
+                        # 进度回调 - 下载完成
+                        if self.progress_callback:
+                            await self.progress_callback({
+                                'stage': 'download_complete',
+                                'batch_idx': batch_idx,
+                                'total_batches': len(stock_batches),
+                                'stocks_in_batch': len(stock_batch),
+                                'stocks_processed': self.processing_stats['total_stocks_processed'],
+                                'total_stocks': len(self.monitored_stocks),
+                                'announcements_downloaded': batch_download_stats.get('total_announcements_downloaded', 0),
+                                'announcements_vectorized': batch_download_stats.get('total_announcements_vectorized', 0)
+                            })
+
+                        # 续传状态回调 - 保存已处理的股票
+                        if self.resume_state_callback:
+                            await self.resume_state_callback({
+                                'processed_stocks': list(self.monitored_stocks)[:self.processing_stats['total_stocks_processed']],
+                                'stats': self.processing_stats.copy()
+                            })
+
                 # 批次间休息，避免API过载
                 if batch_idx < len(stock_batches):
                     logger.info(f"⏸️ 批次间休息 {self.api_delay} 秒...")
                     await asyncio.sleep(self.api_delay)
-            print(f"公告数据：{all_announcements}")
-            logger.info(f"📊 历史公告收集完成: 总计 {len(all_announcements)} 条")
-            self.processing_stats['total_announcements_found'] = len(all_announcements)
-            
-            # 过滤相关公告
-            if all_announcements:
-                logger.info("🔍 开始过滤相关公告...")
-                relevant_announcements = await self._filter_announcements(all_announcements)
-                logger.info(f"✅ 过滤完成: {len(relevant_announcements)} 条相关公告")
-                
-                # 批量处理相关公告
-                if relevant_announcements:
-                    download_stats = await self._batch_download_and_vectorize(relevant_announcements)
-                    self.processing_stats.update(download_stats)
+
+            logger.info(f"📊 所有批次处理完成: 总计 {self.processing_stats['total_announcements_found']} 条公告发现，{self.processing_stats.get('total_announcements_downloaded', 0)} 条下载，{self.processing_stats.get('total_announcements_vectorized', 0)} 条向量化")
             
             # 保存处理状态
             await self._save_processing_status()

@@ -2,6 +2,88 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Claude 与用户交互规范
+
+### 一、交互原则
+
+* 始终使用中文与我对话。
+* 回答要求**言简意贵**，避免冗余或套话。
+
+---
+
+### 二、核心原则
+
+1. **最小改动**
+
+   * 仅修改必须的行数。
+   * 禁止无关重构或格式化。
+
+2. **透明回报**
+
+   * 诚实暴露错误。
+   * 严禁使用 `mock` / `stub` / `pass` 让测试假通过。
+
+3. **先计划后执行**
+
+   * 所有改动前，必须输出修改计划：
+
+     * 文件路径
+     * 行号范围
+     * 修改原因
+
+---
+
+### 三、任务执行报告
+
+* **自动生成**：无需用户提醒。
+* **命名规则**：
+
+  ```bash
+  <时间戳>_<中文任务摘要>.md
+  ```
+* **时间戳命令**：
+
+  ```bash
+  date "+%Y-%m-%d_%H-%M-%S"
+  ```
+
+### 任务报告生成示例
+
+若修改文件：
+
+```
+src/agents/parser.py
+```
+
+则报告路径为：
+
+```
+src/agents/docs/执行报告/
+```
+
+---
+
+### 四、文件结构约定
+
+| 文件类型    | 存放目录       | 说明                            |
+| ------- | ---------- | ----------------------------- |
+| 测试文件    | `tests/`   | 命名为 `test_*.py` 或 `*_test.py` |
+| 脚本文件    | `scripts/` | 用于任务型或工具性脚本                   |
+| 文档文件    | `docs/`    | 所有开发、执行报告、设计文档                |
+| 临时/工具文件 | ❌ 禁止创建     | 禁止放置于根目录下                     |
+
+---
+
+### 五、严格禁止行为
+
+1. 在根目录创建测试脚本。
+2. 使用 `mock`、`stub` 或其他方式伪造测试通过。
+3. 修改未在修改计划中列出的文件。
+4. 破坏配置文件中环境变量引用格式（如 `.env`、`config.json`）。
+5. 在任何代码中硬编码 API 密钥或凭证信息。
+
+---
+
 ## Project Overview
 
 This is a comprehensive Hong Kong Stock Exchange (HKEX) announcement downloader and monitoring system. The project consists of three main architectural components:

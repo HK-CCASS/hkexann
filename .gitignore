@@ -25,6 +25,7 @@ MANIFEST
 venv/
 env/
 ENV/
+.venv/
 
 # IDE
 .vscode/
@@ -53,6 +54,9 @@ logs/
 # Config files that might contain sensitive data
 config.local.yaml
 config.dev.yaml
+.env
+.env.local
+.env.production
 
 # Claude IDE files
 .claude/
@@ -63,4 +67,75 @@ web-bundles/
 
 # Project data directories
 hkexann/
-docs/
+cache/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Data files and exports
+*.csv
+*.json
+*.xml
+*.xlsx
+*.xls
+*.parquet
+
+# Machine learning models
+*.model
+*.pkl
+*.pickle
+*.h5
+*.pt
+*.pth
+*.onnx
+
+# Jupyter notebooks
+.ipynb_checkpoints/
+
+# PyTorch
+*.pth
+
+# TensorFlow
+*.pb
+
+# Backup files
+*.bak
+*.backup
+*.old
+
+# Test coverage reports
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# Documentation builds
+docs/_build/
+site/
+
+# Redis dump
+dump.rdb
+
+# ClickHouse data
+clickhouse_data/
+
+# Milvus data
+milvus_data/
+
+# SiliconFlow API keys and tokens
+siliconflow_*.json
+
+# HKEX classification cache
+hkex_classification_cache/
+
+# Async task storage
+.async_tasks/
+
+# Performance monitoring
+performance_logs/
+monitoring_data/
