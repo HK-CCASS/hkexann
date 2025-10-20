@@ -1,16 +1,30 @@
 # HKEX 公告下载器依赖包
+# 版本要求：Python 3.8+
 
-# 核心依赖
+# 核心依赖（必需）
 requests>=2.25.1          # HTTP请求库
 PyYAML>=5.4.1            # YAML配置文件解析
-beautifulsoup4>=4.9.3    # HTML解析
-pymysql>=1.0.2           # MySQL数据库连接
+beautifulsoup4>=4.9.3    # HTML解析，用于解析港交所页面
 
-# 可选依赖
-opencc-python-reimplemented>=1.1.6  # 繁简体转换 (可选)
-schedule>=1.2.0          # 任务调度器 (守护者进程模式)
-psutil>=5.8.0           # 系统和进程监控 (守护者进程模式)
+# 数据库支持（可选）
+pymysql>=1.0.2           # MySQL数据库连接，用于批量获取股票列表
 
-# 开发依赖 (可选)
-pytest>=6.2.4           # 单元测试
-pytest-cov>=2.12.1      # 测试覆盖率
+# 异步下载依赖（推荐安装，大幅提升下载速度）
+aiohttp>=3.8.0           # 异步HTTP客户端
+aiofiles>=0.8.0          # 异步文件操作
+tenacity>=8.0.0          # 重试机制（支持异步）
+tqdm>=4.62.0             # 进度条显示
+
+# 系统监控依赖
+psutil>=5.8.0            # 系统和进程监控（用于性能监控和资源管理）
+
+# 文本处理依赖（繁简转换功能）
+opencc-python-reimplemented>=1.1.6  # 繁简体转换，用于关键字匹配
+
+# 安装说明：
+# 基础功能：pip install requests PyYAML beautifulsoup4
+# 异步下载：pip install aiohttp aiofiles tenacity tqdm
+# 数据库功能：pip install pymysql
+# 系统监控：pip install psutil
+# 繁简转换：pip install opencc-python-reimplemented
+# 全部安装：pip install -r requirements.txt
