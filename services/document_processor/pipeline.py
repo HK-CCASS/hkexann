@@ -48,7 +48,8 @@ class DocumentProcessingPipeline:
         
         self.vectorizer = DocumentVectorizer(
             collection_name=collection_name,
-            batch_size=batch_size
+            batch_size=batch_size,
+            enable_clickhouse=False  # ClickHouse 未部署，禁用
         )
         
         logger.info(f"文档处理管道初始化完成:")

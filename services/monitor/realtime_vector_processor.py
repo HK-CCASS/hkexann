@@ -51,7 +51,16 @@ class RealtimeVectorProcessor:
             config: 配置字典
         """
         if not PIPELINE_AVAILABLE:
-            raise ImportError(f"无法导入DocumentProcessingPipeline: {IMPORT_ERROR}")
+            logger.warning(f"⚠️ 向量化管道不可用（Milvus未部署），跳过向量化功能")
+            self.config = config
+            vector_config = config.get('vectorization_integration', {})
+            self.pdf_directory = vector_config.get('pdf_directory', 'hkexann')
+            self.collection_name = vector_config.get('collection_name', 'hkex_pdf_embeddings')
+            self.batch_size = vector_config.get('batch_size', 15)
+            self.max_concurrent = vector_config.get('max_concurrent', 5)
+            self.use_existing_pipeline = False
+            self.pipeline = None
+            return
         
         self.config = config
         
@@ -87,10 +96,8 @@ class RealtimeVectorProcessor:
                 logger.info(f"  最大并发: {self.max_concurrent}")
                 logger.info(f"  使用现有pipeline: {self.use_existing_pipeline}")
             except Exception as e:
-                logger.error(f"初始化DocumentProcessingPipeline失败: {e}")
-                import traceback
-                logger.error(f"详细错误堆栈: {traceback.format_exc()}")
-                raise
+                logger.warning(f"⚠️ 初始化DocumentProcessingPipeline失败，向量化功能将不可用: {e}")
+                self.pipeline = None
         else:
             logger.warning("已禁用现有pipeline集成，向量化功能将不可用")
             self.pipeline = None

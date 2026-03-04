@@ -86,13 +86,16 @@ class CorrectedHistoricalProcessor:
         # 状态文件
         self.status_file = Path("hkexann") / ".corrected_historical_status.json"
         self.status_file.parent.mkdir(exist_ok=True)
+        # 公告级 checkpoint：记录已完整处理（下载+向量化）的 FILE_LINK
+        self.checkpoint_file = Path("hkexann") / ".announcement_checkpoint.json"
+        self._processed_links: Set[str] = set()  # 运行时缓存，启动时加载
         
         # 初始化真实下载器
         try:
             downloader_config = {
                 'downloader_integration': {
                     'use_existing_downloader': True,
-                    'download_directory': 'hkexann',
+                    'download_directory': config.get('downloader_integration', {}).get('download_directory', 'hkexann'),
                     'enable_filtering': True,
                     'timeout': 30,
                     'preserve_original_filename': True,
@@ -162,31 +165,40 @@ class CorrectedHistoricalProcessor:
             logger.warning(f"⚠️ 检查首次运行状态失败，默认为首次运行: {e}")
             return True
 
-    async def process_historical_announcements(self) -> Dict[str, Any]:
+    async def process_historical_announcements(self,
+                                                start_date_str: str = None,
+                                                end_date_str: str = None,
+                                                shutdown_event=None) -> Dict[str, Any]:
         """
         处理历史公告 - 使用正确的下载API
-        
+
+        Args:
+            start_date_str: 可选，指定开始日期 (YYYY-MM-DD)，优先于自动计算
+            end_date_str: 可选，指定结束日期 (YYYY-MM-DD)，优先于自动计算
+
         Returns:
             处理结果统计
         """
         start_time = datetime.now()
         self.processing_stats['processing_start_time'] = start_time.isoformat()
-        
-        # 动态确定处理天数 - 首次运行使用较少天数以快速启动
-        is_first = await self.is_first_run()
-        actual_days = self.first_run_historical_days if is_first else self.historical_days
-        
+
         logger.info("🚀 开始修复后的历史公告批量处理")
-        logger.info(f"📅 处理范围: 最近 {actual_days} 天 {'(首次运行快速模式)' if is_first else '(常规模式)'}")
         logger.info(f"🎯 监控股票: {len(self.monitored_stocks)} 只")
         logger.info(f"🔧 使用正确的下载API: titleSearchServlet.do")
-        
+
         try:
-            # 准备日期范围
-            end_date = datetime.now()
-            start_date = end_date - timedelta(days=actual_days)
-            
-            logger.info(f"📅 历史查询范围: {start_date.strftime('%Y-%m-%d')} 到 {end_date.strftime('%Y-%m-%d')}")
+            # 准备日期范围：优先使用显式指定的日期，否则按天数自动计算
+            if start_date_str and end_date_str:
+                end_date = datetime.strptime(end_date_str, '%Y-%m-%d')
+                start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
+                logger.info(f"📅 历史查询范围: {start_date.strftime('%Y-%m-%d')} 到 {end_date.strftime('%Y-%m-%d')} (显式指定)")
+            else:
+                is_first = await self.is_first_run()
+                actual_days = self.first_run_historical_days if is_first else self.historical_days
+                logger.info(f"📅 处理范围: 最近 {actual_days} 天 {'(首次运行快速模式)' if is_first else '(常规模式)'}")
+                end_date = datetime.now()
+                start_date = end_date - timedelta(days=actual_days)
+                logger.info(f"📅 历史查询范围: {start_date.strftime('%Y-%m-%d')} 到 {end_date.strftime('%Y-%m-%d')}")
             
             # 分批处理股票
             stock_list = list(self.monitored_stocks)
@@ -197,6 +209,11 @@ class CorrectedHistoricalProcessor:
 
             # 处理每个股票批次 - 每批处理完立即下载
             for batch_idx, stock_batch in enumerate(stock_batches, 1):
+                # 优雅关闭检查：批次开始前判断是否已收到退出信号
+                if shutdown_event and shutdown_event.is_set():
+                    logger.info("⏹️  收到退出信号，停止处理新批次（已完成批次进度已保存）")
+                    break
+
                 logger.info(f"📦 处理第 {batch_idx}/{len(stock_batches)} 批股票: {stock_batch}")
 
                 # 进度回调 - 批次开始
@@ -241,7 +258,8 @@ class CorrectedHistoricalProcessor:
                     # 3. 立即下载和向量化该批次的相关公告
                     if relevant_batch_announcements:
                         logger.info(f"📥 下载批次 {batch_idx} 的相关公告...")
-                        batch_download_stats = await self._batch_download_and_vectorize(relevant_batch_announcements)
+                        batch_download_stats = await self._batch_download_and_vectorize(
+                            relevant_batch_announcements, shutdown_event=shutdown_event)
 
                         # 累加批次的统计信息
                         for key, value in batch_download_stats.items():
@@ -277,17 +295,19 @@ class CorrectedHistoricalProcessor:
                     logger.info(f"⏸️ 批次间休息 {self.api_delay} 秒...")
                     await asyncio.sleep(self.api_delay)
 
+            interrupted = shutdown_event is not None and shutdown_event.is_set()
             logger.info(f"📊 所有批次处理完成: 总计 {self.processing_stats['total_announcements_found']} 条公告发现，{self.processing_stats.get('total_announcements_downloaded', 0)} 条下载，{self.processing_stats.get('total_announcements_vectorized', 0)} 条向量化")
-            
+
             # 保存处理状态
             await self._save_processing_status()
-            
+
             end_time = datetime.now()
             self.processing_stats['processing_end_time'] = end_time.isoformat()
             processing_time = (end_time - start_time).total_seconds()
-            
+
             # 输出最终统计
-            logger.info("🎉 修复后历史公告批量处理完成")
+            label = "⏹️  中断（断点已保存）" if interrupted else "🎉 修复后历史公告批量处理完成"
+            logger.info(label)
             logger.info(f"📈 处理统计:")
             logger.info(f"   📦 处理股票: {self.processing_stats['total_stocks_processed']} 只")
             logger.info(f"   📡 API调用: {self.processing_stats['api_calls_made']} 次")
@@ -296,9 +316,10 @@ class CorrectedHistoricalProcessor:
             logger.info(f"   🧠 向量化成功: {self.processing_stats['total_announcements_vectorized']} 条")
             logger.info(f"   ⏱️ 总耗时: {processing_time:.2f} 秒")
             logger.info(f"   ❌ 错误数: {len(self.processing_stats['errors'])}")
-            
+
             return {
-                'success': True,
+                'success': not interrupted,
+                'interrupted': interrupted,
                 'processing_time_seconds': processing_time,
                 **self.processing_stats
             }
@@ -445,7 +466,7 @@ class CorrectedHistoricalProcessor:
             self.processing_stats['errors'].append(f"过滤公告失败: {e}")
             return announcements  # 返回原始列表
 
-    async def _batch_download_and_vectorize(self, announcements: List[Dict[str, Any]]) -> Dict[str, Any]:
+    async def _batch_download_and_vectorize(self, announcements: List[Dict[str, Any]], shutdown_event=None) -> Dict[str, Any]:
         """
         批量下载和向量化公告
         
@@ -456,45 +477,66 @@ class CorrectedHistoricalProcessor:
             Dict[str, Any]: 处理统计
         """
         logger.info(f"📄 开始批量下载和向量化 {len(announcements)} 条历史公告")
-        
+
+        # 加载已处理公告 checkpoint
+        await self._load_checkpoint()
+
         download_stats = {
             'total_announcements_downloaded': 0,
             'total_announcements_vectorized': 0,
+            'total_announcements_skipped': 0,
             'download_errors': [],
             'vectorization_errors': []
         }
-        
+
         # 并发控制
         semaphore = asyncio.Semaphore(self.max_concurrent)
-        
+
         async def process_single_announcement(announcement):
             async with semaphore:
                 try:
+                    # 优雅关闭：已收到退出信号则放弃当前公告（等 semaphore 内已开始的完成）
+                    if shutdown_event and shutdown_event.is_set():
+                        return
+
                     # 检查是否有PDF链接
                     file_link = announcement.get('FILE_LINK', '')
                     if not file_link or not file_link.lower().endswith('.pdf'):
                         logger.debug(f"跳过非PDF公告: {announcement.get('TITLE', 'N/A')[:50]}")
                         return
-                    
+
+                    # 断点续传：已处理过则跳过
+                    if file_link in self._processed_links:
+                        download_stats['total_announcements_skipped'] += 1
+                        logger.debug(f"⏭️ checkpoint跳过: {announcement.get('TITLE', 'N/A')[:50]}")
+                        return
+
                     # 使用原项目的下载功能
                     download_result = await self._download_pdf_announcement(announcement)
-                    
+
                     if download_result and download_result.get('success'):
-                        download_stats['total_announcements_downloaded'] += 1
-                        
-                        # 向量化处理
-                        vector_result = await self._vectorize_pdf(download_result['local_path'])
-                        
-                        if vector_result and vector_result.get('success'):
-                            download_stats['total_announcements_vectorized'] += 1
-                            logger.info(f"✅ 历史公告处理完成: {announcement.get('TITLE', 'N/A')[:50]}...")
+                        if download_result.get('skipped'):
+                            # 文件已存在：视为已完整处理，直接写入 checkpoint 跳过向量化
+                            download_stats['total_announcements_skipped'] += 1
+                            logger.info(f"⏭️ 文件已存在，跳过向量化: {announcement.get('TITLE', 'N/A')[:50]}")
+                            await self._save_checkpoint(file_link)
                         else:
-                            error_msg = f"向量化失败: {announcement.get('TITLE', 'N/A')[:50]}"
-                            download_stats['vectorization_errors'].append(error_msg)
+                            download_stats['total_announcements_downloaded'] += 1
+                            # 新下载的文件：执行向量化
+                            vector_result = await self._vectorize_pdf(download_result['local_path'])
+
+                            if vector_result and vector_result.get('success'):
+                                download_stats['total_announcements_vectorized'] += 1
+                                logger.info(f"✅ 历史公告处理完成: {announcement.get('TITLE', 'N/A')[:50]}...")
+                                # 写入 checkpoint
+                                await self._save_checkpoint(file_link)
+                            else:
+                                error_msg = f"向量化失败: {announcement.get('TITLE', 'N/A')[:50]}"
+                                download_stats['vectorization_errors'].append(error_msg)
                     else:
                         error_msg = f"下载失败: {announcement.get('TITLE', 'N/A')[:50]}"
                         download_stats['download_errors'].append(error_msg)
-                    
+
                 except Exception as e:
                     error_msg = f"处理公告异常: {announcement.get('TITLE', 'N/A')[:50]} - {e}"
                     download_stats['download_errors'].append(error_msg)
@@ -578,6 +620,28 @@ class CorrectedHistoricalProcessor:
         except Exception as e:
             logger.error(f"向量化PDF失败: {e}")
             return {'success': False, 'error': str(e)}
+
+    async def _load_checkpoint(self):
+        """加载已处理公告 FILE_LINK 集合"""
+        try:
+            if self.checkpoint_file.exists():
+                async with aiofiles.open(self.checkpoint_file, 'r', encoding='utf-8') as f:
+                    data = json.loads(await f.read())
+                self._processed_links = set(data.get('processed_links', []))
+                logger.info(f"📌 已加载 checkpoint: {len(self._processed_links)} 条已处理公告")
+        except Exception as e:
+            logger.warning(f"⚠️ 加载 checkpoint 失败，重新处理所有公告: {e}")
+            self._processed_links = set()
+
+    async def _save_checkpoint(self, file_link: str):
+        """追加一条已处理公告到 checkpoint"""
+        self._processed_links.add(file_link)
+        try:
+            data = {'processed_links': list(self._processed_links)}
+            async with aiofiles.open(self.checkpoint_file, 'w', encoding='utf-8') as f:
+                await f.write(json.dumps(data, ensure_ascii=False))
+        except Exception as e:
+            logger.warning(f"⚠️ 保存 checkpoint 失败: {e}")
 
     async def _save_processing_status(self):
         """保存处理状态"""

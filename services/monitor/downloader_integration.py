@@ -215,6 +215,18 @@ class RealtimeDownloaderWrapper:
 
             file_path = download_dir / filename
 
+            # 文件已存在则跳过（断点续传/去重）
+            if file_path.exists() and file_path.stat().st_size > 0:
+                logger.info(f"⏭️ 跳过已存在文件: {filename}")
+                return {
+                    "success": True,
+                    "file_path": str(file_path),
+                    "filename": filename,
+                    "file_size": file_path.stat().st_size,
+                    "download_time": 0,
+                    "skipped": True
+                }
+
             # 执行下载
             import time
             start_time = time.time()

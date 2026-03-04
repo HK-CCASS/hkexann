@@ -32,12 +32,20 @@ class DualAnnouncementFilter:
         self.monitored_stocks = set(monitored_stocks)  # 创建副本避免外部修改
         self.config = config
 
-        # 从配置读取过滤条件
+        # 从配置读取过滤条件（优先 realtime_monitoring.filtering，其次直接的 dual_filter 节点）
         filtering_config = config.get('realtime_monitoring', {}).get('filtering', {})
+        if not filtering_config:
+            filtering_config = config.get('dual_filter', {})
         self.stock_filter_enabled = filtering_config.get('stock_filter_enabled', True)
         self.type_filter_enabled = filtering_config.get('type_filter_enabled', True)
         self.excluded_categories = filtering_config.get('excluded_categories', [])
         self.included_keywords = filtering_config.get('included_keywords', [])
+
+        # 白名单模式：filter_mode=whitelist 时，只保留 listed_category_codes 中的分类代码
+        self.filter_mode = filtering_config.get('filter_mode', 'blacklist')
+        self.listed_category_codes: Set[str] = set(
+            str(c).zfill(5) for c in filtering_config.get('listed_category_codes', [])
+        )
 
         # HKEX分类系统支持
         self.hkex_classification_enabled = filtering_config.get('hkex_classification_enabled', True)
@@ -65,6 +73,8 @@ class DualAnnouncementFilter:
         logger.info(f"  监听股票数量: {len(self.monitored_stocks)}")
         logger.info(f"  股票过滤: {'启用' if self.stock_filter_enabled else '禁用'}")
         logger.info(f"  类型过滤: {'启用' if self.type_filter_enabled else '禁用'}")
+        logger.info(f"  过滤模式: {self.filter_mode}")
+        logger.info(f"  白名单分类代码数量: {len(self.listed_category_codes)}")
         logger.info(f"  HKEX分类系统: {'启用' if self.hkex_classification_enabled else '禁用'}")
         logger.info(f"  排除类别数量: {len(self.excluded_categories)}")
         logger.info(f"  包含关键字数量: {len(self.included_keywords)}")
@@ -229,7 +239,16 @@ class DualAnnouncementFilter:
                         # 使用分类代码进行精确过滤
                         category_stats[category_code] = category_stats.get(category_code, 0) + 1
 
-                        # 检查分类代码是否在排除列表中
+                        # 白名单模式：只保留在 listed_category_codes 中的分类代码
+                        if self.filter_mode == 'whitelist' and self.listed_category_codes:
+                            if category_code in self.listed_category_codes:
+                                filtered.append(announcement)
+                                logger.debug(f"✅ 分类代码 '{category_code}' 在白名单中，保留")
+                            else:
+                                logger.debug(f"❌ 分类代码 '{category_code}' 不在白名单中，跳过")
+                            continue
+
+                        # 黑名单模式（默认）：检查分类代码是否在排除列表中
                         if self.classification_parser.is_excluded_category(category_code, self.excluded_codes):
                             # 获取分类信息用于日志
                             category_info = self.classification_parser.get_category_hierarchy(category_code)

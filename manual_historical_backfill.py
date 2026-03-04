@@ -13,6 +13,7 @@
 import asyncio
 import logging
 import argparse
+import signal
 import yaml
 import os
 import sys
@@ -28,7 +29,7 @@ sys.path.append(str(Path(__file__).parent))
 # 导入现有组件
 from services.monitor.enhanced_announcement_processor import EnhancedAnnouncementProcessor
 from services.monitor.data_flow.corrected_historical_processor import CorrectedHistoricalProcessor
-from services.monitor.hkex_official_filter import HKEXOfficialFilter
+from services.monitor.dual_filter import DualAnnouncementFilter
 from services.monitor.downloader_integration import RealtimeDownloaderWrapper
 from services.monitor.realtime_vector_processor import RealtimeVectorProcessor
 from start_enhanced_monitor import load_config, substitute_env_vars
@@ -220,22 +221,22 @@ class ManualHistoricalBackfillProcessor:
             logger.info("🧠 初始化向量化处理器...")
             self.vector_processor = RealtimeVectorProcessor(self.config)
             
-            # 3. 初始化HKEX官方过滤器
-            logger.info("🔬 初始化HKEX官方过滤器...")
-            self.hkex_filter = HKEXOfficialFilter(self.config)
-            await self.hkex_filter.initialize()
-            
+            # 3. 初始化双重过滤器（白名单模式，按分类代码过滤）
+            logger.info("🔬 初始化双重过滤器...")
+            self.dual_filter = DualAnnouncementFilter(set(), self.config)
+
             # 4. 初始化历史处理器
             logger.info("📚 初始化历史处理器...")
             historical_config = self.config.get('manual_historical_processing', {})
             historical_config.update({
                 'common_keywords': self.config.get('common_keywords', {}),
-                'announcement_categories': self.config.get('announcement_categories', {})
+                'announcement_categories': self.config.get('announcement_categories', {}),
+                'downloader_integration': self.config.get('downloader_integration', {})
             })
-            
+
             self.historical_processor = CorrectedHistoricalProcessor(
                 hkex_downloader=self.downloader.get_underlying_downloader(),
-                simple_filter=self.hkex_filter,
+                simple_filter=self.dual_filter,
                 vectorizer=self.vector_processor,
                 monitored_stocks=set(),  # 动态设置
                 config=historical_config,
@@ -255,7 +256,8 @@ class ManualHistoricalBackfillProcessor:
                                       start_date: str,
                                       end_date: str,
                                       batch_size: int = 5,
-                                      enable_filtering: bool = True) -> Dict[str, Any]:
+                                      enable_filtering: bool = True,
+                                      shutdown_event: asyncio.Event = None) -> Dict[str, Any]:
         """
         为指定股票补充历史公告
 
@@ -359,7 +361,11 @@ class ManualHistoricalBackfillProcessor:
                     else:
                         self.stock_progress_bar.set_description("🚀 开始处理")
 
-                    result = await self.historical_processor.process_historical_announcements()
+                    result = await self.historical_processor.process_historical_announcements(
+                        start_date_str=start_date,
+                        end_date_str=end_date,
+                        shutdown_event=shutdown_event
+                    )
 
                     # 确保进度条显示完成状态
                     if self.stock_progress_bar.n < len(stock_codes):
@@ -381,10 +387,11 @@ class ManualHistoricalBackfillProcessor:
                 # 标记续传任务为完成
                 await self.mark_resume_completed()
 
-                logger.info(f"✅ 历史处理完成，耗时 {processing_time:.1f} 秒")
+                interrupted = result.get('interrupted', False)
+                logger.info(f"{'⏹️ 已中断（断点已保存）' if interrupted else '✅ 历史处理完成'}，耗时 {processing_time:.1f} 秒")
                 logger.info(f"📊 处理结果: {result}")
 
-                return self._build_success_result(result)
+                return self._build_success_result(result, interrupted=interrupted)
                 
             finally:
                 # 恢复原始股票列表
@@ -405,12 +412,12 @@ class ManualHistoricalBackfillProcessor:
             'processing_time': processing_time
         })
 
-    def _build_success_result(self, result: Dict[str, Any]) -> Dict[str, Any]:
+    def _build_success_result(self, result: Dict[str, Any], interrupted: bool = False) -> Dict[str, Any]:
         """构建成功结果"""
         total_time = (datetime.now() - self.start_time).total_seconds()
-        
+
         return {
-            'status': 'success',
+            'status': 'interrupted' if interrupted else 'success',
             'summary': {
                 'total_stocks': self.stats['total_stocks'],
                 'processed_stocks': self.stats['processed_stocks'],
@@ -536,8 +543,10 @@ async def parse_stock_list(stock_input: str) -> List[str]:
     # 标准化股票代码格式
     normalized_codes = []
     for code in stock_codes:
-        # 移除.HK后缀，补齐前导零
+        # 移除.HK后缀和HK前缀，补齐前导零
         clean_code = code.replace('.HK', '').replace('.hk', '').strip()
+        if clean_code.upper().startswith('HK'):
+            clean_code = clean_code[2:]
         if clean_code.isdigit():
             normalized_code = clean_code.zfill(5)  # 补齐到5位
             normalized_codes.append(normalized_code)
@@ -700,64 +709,80 @@ async def main():
     
     # 创建处理器并执行
     processor = ManualHistoricalBackfillProcessor(config)
-    
+
+    # 优雅关闭：捕获 Ctrl+C / SIGTERM
+    shutdown_event = asyncio.Event()
+
+    def _handle_signal():
+        if not shutdown_event.is_set():
+            logger.info("⚠️  收到退出信号，等待当前公告处理完成后安全退出（进度已保存）...")
+            shutdown_event.set()
+
+    loop = asyncio.get_event_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, _handle_signal)
+
     try:
         # 初始化
         if not await processor.initialize():
             logger.error("❌ 处理器初始化失败")
             return 1
-        
+
         # 执行处理
         result = await processor.process_stocks_historical(
             stock_codes=stock_codes,
             start_date=start_date_str,
             end_date=end_date_str,
             batch_size=args.batch_size,
-            enable_filtering=not args.no_filter
+            enable_filtering=not args.no_filter,
+            shutdown_event=shutdown_event
         )
-        
+
         # 显示结果
         logger.info("="*70)
-        if result['status'] == 'success':
-            logger.info("✅ 处理完成")
-            summary = result['summary']
-            efficiency = result['efficiency']
-            
+        if result['status'] in ('success', 'interrupted'):
+            if result['status'] == 'interrupted':
+                logger.info("⏹️  已优雅退出（断点已保存，下次运行自动续传）")
+            else:
+                logger.info("✅ 处理完成")
+            summary = result.get('summary', {})
+            efficiency = result.get('efficiency', {})
+
             logger.info(f"📊 处理统计:")
-            logger.info(f"  • 目标股票: {summary['total_stocks']} 只")
-            logger.info(f"  • 处理股票: {summary['processed_stocks']} 只")
-            logger.info(f"  • 发现公告: {summary['total_announcements']} 条")
-            logger.info(f"  • 下载成功: {summary['downloaded_announcements']} 条")
-            logger.info(f"  • 向量化成功: {summary['vectorized_announcements']} 条")
-            logger.info(f"  • 处理耗时: {summary['processing_time_seconds']:.1f} 秒")
-            logger.info(f"  • 总计耗时: {summary['total_time_seconds']:.1f} 秒")
-            
-            logger.info(f"📈 效率指标:")
-            logger.info(f"  • 下载成功率: {efficiency['download_success_rate']:.1f}%")
-            logger.info(f"  • 向量化成功率: {efficiency['vectorization_success_rate']:.1f}%")
-            logger.info(f"  • 平均处理时间: {efficiency['avg_time_per_stock']:.1f} 秒/股票")
-            
+            logger.info(f"  • 目标股票: {summary.get('total_stocks', 0)} 只")
+            logger.info(f"  • 处理股票: {summary.get('processed_stocks', 0)} 只")
+            logger.info(f"  • 发现公告: {summary.get('total_announcements', 0)} 条")
+            logger.info(f"  • 下载成功: {summary.get('downloaded_announcements', 0)} 条")
+            logger.info(f"  • 向量化成功: {summary.get('vectorized_announcements', 0)} 条")
+            logger.info(f"  • 处理耗时: {summary.get('processing_time_seconds', 0):.1f} 秒")
+            logger.info(f"  • 总计耗时: {summary.get('total_time_seconds', 0):.1f} 秒")
+
+            if efficiency:
+                logger.info(f"📈 效率指标:")
+                logger.info(f"  • 下载成功率: {efficiency.get('download_success_rate', 0):.1f}%")
+                logger.info(f"  • 向量化成功率: {efficiency.get('vectorization_success_rate', 0):.1f}%")
+                logger.info(f"  • 平均处理时间: {efficiency.get('avg_time_per_stock', 0):.1f} 秒/股票")
+
         else:
             logger.error("❌ 处理失败")
-            logger.error(f"错误信息: {result['error_message']}")
-        
+            logger.error(f"错误信息: {result.get('error_message', '')}")
+
         # 输出结果文件
         if args.output:
             import json
             with open(args.output, 'w', encoding='utf-8') as f:
                 json.dump(result, f, ensure_ascii=False, indent=2, default=str)
             logger.info(f"📄 结果已保存到: {args.output}")
-        
+
         logger.info("="*70)
-        return 0 if result['status'] == 'success' else 1
-        
-    except KeyboardInterrupt:
-        logger.info("⏹️ 用户中断处理")
-        return 1
+        return 0 if result['status'] in ('success', 'interrupted') else 1
+
     except Exception as e:
         logger.error(f"❌ 处理过程中发生异常: {e}")
         return 1
     finally:
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.remove_signal_handler(sig)
         await processor.close()
 
 

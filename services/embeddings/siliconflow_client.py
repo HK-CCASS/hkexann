@@ -37,7 +37,7 @@ class SiliconFlowEmbeddingClient:
     """SiliconFlow 嵌入服务客户端"""
 
     def __init__(self, api_key: Optional[str] = None, api_base: Optional[str] = None, model: Optional[str] = None,
-                 timeout: int = 30, max_retries: int = 8, rate_limit: int = 50):  # 每秒最大请求数
+                 timeout: int = 30, max_retries: int = 3, rate_limit: int = 50):  # 每秒最大请求数
         """
         初始化客户端
         

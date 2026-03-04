@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  HKEX 夜间公告自动下载 launchd 任务配置
+  使用前必须修改：
+    1. 将所有 /path/to/your/hkexann 替换为本机实际项目路径（如 /Users/username/hkexann）
+    2. 确认 venv 路径与本机一致
+
+  安装命令：
+    cp scripts/com.hkexann.nightly.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.hkexann.nightly.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.hkexann.nightly</string>
+
+    <!-- 每天 HKT 02:00 启动（UTC+8，即 UTC 18:00 前一天） -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>18</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <!-- 修改为本机实际路径 -->
+        <string>/path/to/your/hkexann/scripts/nightly_download.sh</string>
+    </array>
+
+    <!-- 修改为本机实际项目路径 -->
+    <key>WorkingDirectory</key>
+    <string>/path/to/your/hkexann</string>
+
+    <!-- 修改为本机实际项目路径 -->
+    <key>StandardOutPath</key>
+    <string>/path/to/your/hkexann/logs/launchd_out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/path/to/your/hkexann/logs/launchd_err.log</string>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <!-- 保持环境变量 PATH，确保 python3 和 docker 可用 -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
+    </dict>
+</dict>
+</plist>

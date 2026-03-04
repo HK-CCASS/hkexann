@@ -124,6 +124,7 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         case_sensitive = False
+        extra = "ignore"  # 忽略 .env 中未定义的额外字段
 
 
     @property
